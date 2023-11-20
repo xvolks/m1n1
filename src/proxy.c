@@ -38,6 +38,12 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
     reply->opcode = request->opcode;
     reply->status = S_OK;
     reply->retval = 0;
+    bool silent = request->args[NUM_ARGS-1] & 1;
+    if (silent)
+        exc_guard = GUARD_SILENT;
+    else
+        exc_guard = GUARD_OFF;
+
     switch (request->opcode) {
         case P_NOP:
             break;
@@ -118,108 +124,108 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
 
         case P_WRITE64:
-            exc_guard = GUARD_SKIP;
+            exc_guard |= GUARD_SKIP;
             write64(request->args[0], request->args[1]);
             break;
         case P_WRITE32:
-            exc_guard = GUARD_SKIP;
+            exc_guard |= GUARD_SKIP;
             write32(request->args[0], request->args[1]);
             break;
         case P_WRITE16:
-            exc_guard = GUARD_SKIP;
+            exc_guard |= GUARD_SKIP;
             write16(request->args[0], request->args[1]);
             break;
         case P_WRITE8:
-            exc_guard = GUARD_SKIP;
+            exc_guard |= GUARD_SKIP;
             write8(request->args[0], request->args[1]);
             break;
 
         case P_SEARCH64:
-            exc_guard = GUARD_MARK | GUARD_SILENT;
+            exc_guard |= GUARD_MARK;
             reply->retval = search64(request->args[0], request->args[1], request->args[2]);
             break;
         case P_READ64:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = read64(request->args[0]);
             break;
         case P_READ32:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = read32(request->args[0]);
             break;
         case P_READ16:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = read16(request->args[0]);
             break;
         case P_READ8:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = read8(request->args[0]);
             break;
 
         case P_SET64:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = set64(request->args[0], request->args[1]);
             break;
         case P_SET32:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = set32(request->args[0], request->args[1]);
             break;
         case P_SET16:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = set16(request->args[0], request->args[1]);
             break;
         case P_SET8:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = set8(request->args[0], request->args[1]);
             break;
 
         case P_CLEAR64:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = clear64(request->args[0], request->args[1]);
             break;
         case P_CLEAR32:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = clear32(request->args[0], request->args[1]);
             break;
         case P_CLEAR16:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = clear16(request->args[0], request->args[1]);
             break;
         case P_CLEAR8:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = clear8(request->args[0], request->args[1]);
             break;
 
         case P_MASK64:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = mask64(request->args[0], request->args[1], request->args[2]);
             break;
         case P_MASK32:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = mask32(request->args[0], request->args[1], request->args[2]);
             break;
         case P_MASK16:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = mask16(request->args[0], request->args[1], request->args[2]);
             break;
         case P_MASK8:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = mask8(request->args[0], request->args[1], request->args[2]);
             break;
 
         case P_WRITEREAD64:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = writeread64(request->args[0], request->args[1]);
             break;
         case P_WRITEREAD32:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = writeread32(request->args[0], request->args[1]);
             break;
         case P_WRITEREAD16:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = writeread16(request->args[0], request->args[1]);
             break;
         case P_WRITEREAD8:
-            exc_guard = GUARD_MARK;
+            exc_guard |= GUARD_MARK;
             reply->retval = writeread8(request->args[0], request->args[1]);
             break;
 

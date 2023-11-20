@@ -655,6 +655,8 @@ class M1N1Proxy(Reloadable):
         if len(args) > EXPECTED_ARGS:
             raise ValueError(f"Too many arguments: got {len(args)}, expected {EXPECTED_ARGS}")
         args = list(args) + [0] * (EXPECTED_ARGS - len(args))
+        if silent:
+            args[-1] |= 1
         req = struct.pack(f"<{EXPECTED_ARGS + 1}Q", opcode, *args)
         if self.debug:
             debug_buffer = "<<<< %08x:"%opcode
@@ -787,31 +789,31 @@ class M1N1Proxy(Reloadable):
         '''write 1 byte value to given address'''
         self.request(self.P_WRITE8, addr, data)
 
-    def search64(self, value, addr_start, addr_end):
+    def search64(self, value, addr_start, addr_end, silent=True):
         '''search for an 8-byte value in a given address range'''
         if addr_start & 7:
             raise AlignmentError()
         if addr_end & 7:
             raise AlignmentError()
-        return self.request(self.P_SEARCH64, value, addr_start, addr_end)
-    def read64(self, addr):
+        return self.request(self.P_SEARCH64, value, addr_start, addr_end, silent=silent)
+    def read64(self, addr, silent=False):
         '''return 8 byte value from given address'''
         if addr & 7:
             raise AlignmentError()
-        return self.request(self.P_READ64, addr)
-    def read32(self, addr):
+        return self.request(self.P_READ64, addr, silent=silent)
+    def read32(self, addr, silent=False):
         '''return 4 byte value given address'''
         if addr & 3:
             raise AlignmentError()
-        return self.request(self.P_READ32, addr)
-    def read16(self, addr):
+        return self.request(self.P_READ32, addr, silent=silent)
+    def read16(self, addr, silent=False):
         '''return 2 byte value from given address'''
         if addr & 1:
             raise AlignmentError()
-        return self.request(self.P_READ16, addr)
-    def read8(self, addr):
+        return self.request(self.P_READ16, addr, silent=silent)
+    def read8(self, addr, silent=False):
         '''return 1 byte value from given address'''
-        return self.request(self.P_READ8, addr)
+        return self.request(self.P_READ8, addr, silent=silent)
 
     def set64(self, addr, data):
         '''Or 64 bit value of data into memory at addr and return result'''
