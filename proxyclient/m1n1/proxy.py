@@ -792,9 +792,9 @@ class M1N1Proxy(Reloadable):
     def search64(self, value, addr_start, addr_end, silent=True):
         '''search for an 8-byte value in a given address range'''
         if addr_start & 7:
-            raise AlignmentError()
+            raise AlignmentError(f"start address: 0x{addr_start:x}")
         if addr_end & 7:
-            raise AlignmentError()
+            raise AlignmentError(f"end address: 0x{addr_end:x}")
         return self.request(self.P_SEARCH64, value, addr_start, addr_end, silent=silent)
     def read64(self, addr, silent=False):
         '''return 8 byte value from given address'''
