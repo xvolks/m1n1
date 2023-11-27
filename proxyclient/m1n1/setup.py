@@ -10,10 +10,12 @@ from .utils import *
 from .hw.pmu import PMU
 from plugins import PluginManager
 
+DEBUG_COM = False
+
 # Create serial connection
-iface = UartInterface()
+iface = UartInterface(debug=DEBUG_COM)
 # Construct m1n1 proxy layer over serial connection
-p = M1N1Proxy(iface, debug=False)
+p = M1N1Proxy(iface, debug=DEBUG_COM)
 # Customise parameters of proxy and serial port
 # based on information sent over the connection
 bootstrap_port(iface, p)
