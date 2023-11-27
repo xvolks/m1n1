@@ -19,6 +19,7 @@ typedef struct {
     const char dptx_phy[24];
     const char dp2hdmi_gpio[24];
     const char pmgr_dev[24];
+    const char dcp_alias[8];
     u32 dcp_index;
     u8 num_dptxports;
     u8 die;
@@ -35,6 +36,7 @@ typedef struct dcp_dev {
     dcp_dpav_if_t *dpav_ep;
     dcp_dptx_if_t *dptx_ep;
     dptx_phy_t *phy;
+    u32 die;
     u32 dp2hdmi_pwr_gpio;
     u32 hdmi_pwr_gpio;
 } dcp_dev_t;
