@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
+
 #include "display.h"
 #include "adt.h"
 #include "assert.h"
@@ -35,41 +37,49 @@ static const display_config_t display_config_m1 = {
     .dcp_dart = "/arm-io/dart-dcp",
     .disp_dart = "/arm-io/dart-disp0",
     .pmgr_dev = "DISP0_CPU0",
+    .dcp_alias = "dcp",
 };
 
+#define USE_DCPEXT 1
+
 static const display_config_t display_config_m2 = {
+#if USE_DCPEXT
+    .dcp = "/arm-io/dcpext",
+    .dcp_dart = "/arm-io/dart-dcpext",
+    .disp_dart = "/arm-io/dart-dispext0",
+    .pmgr_dev = "DISPEXT_CPU0",
+    .dcp_alias = "dcpext",
+    .dcp_index = 1,
+#else
     .dcp = "/arm-io/dcp",
     .dcp_dart = "/arm-io/dart-dcp",
     .disp_dart = "/arm-io/dart-disp0",
     .dp2hdmi_gpio = "/arm-io/dp2hdmi-gpio",
     .dptx_phy = "/arm-io/dptx-phy",
     .pmgr_dev = "DISP0_CPU0",
+    .dcp_alias = "dcp",
     .dcp_index = 0,
+#endif
+    .dp2hdmi_gpio = "/arm-io/dp2hdmi-gpio",
+    .dptx_phy = "/arm-io/dptx-phy",
     .num_dptxports = 2,
 };
 
-#define T6020_T6021_USE_DCPEXT 255
-
 static const display_config_t display_config_m2_pro_max = {
-#if T6020_T6021_USE_DCPEXT == 0
+#if USE_DCPEXT
     .dcp = "/arm-io/dcpext0",
     .dcp_dart = "/arm-io/dart-dcpext0",
     .disp_dart = "/arm-io/dart-dispext0",
     .pmgr_dev = "DISPEXT0_CPU0",
+    .dcp_alias = "dcpext0",
     .dcp_index = 1,
-    .num_dptxports = 2,
-#elif T6020_T6021_USE_DCPEXT == 1
-    .dcp = "/arm-io/dcpext1",
-    .dcp_dart = "/arm-io/dart-dcpext1",
-    .disp_dart = "/arm-io/dart-dispext1",
-    .pmgr_dev = "DISPEXT1_CPU0",
-    .dcp_index = 2,
     .num_dptxports = 2,
 #else
     .dcp = "/arm-io/dcp0",
     .dcp_dart = "/arm-io/dart-dcp0",
     .disp_dart = "/arm-io/dart-disp0",
     .pmgr_dev = "DISP0_CPU0",
+    .dcp_alias = "dcp",
     .dcp_index = 0,
     .num_dptxports = 1,
 #endif
@@ -84,6 +94,7 @@ static const display_config_t display_config_m2_ultra = {
     .dp2hdmi_gpio = "/arm-io/dp2hdmi-gpio1",
     .dptx_phy = "/arm-io/lpdptx-phy1",
     .pmgr_dev = "DISPEXT4_CPU0",
+    .dcp_alias = "dcpext4",
     .dcp_index = 1,
     .num_dptxports = 2,
     .die = 1,
@@ -220,19 +231,29 @@ static uintptr_t display_map_fb(uintptr_t iova, u64 paddr, u64 size)
     return iova;
 }
 
+const display_config_t *display_get_config(void)
+{
+    if (adt_is_compatible(adt, 0, "J473AP"))
+        return &display_config_m2;
+    else if (adt_is_compatible(adt, 0, "J474sAP") || adt_is_compatible(adt, 0, "J475cAP"))
+        return &display_config_m2_pro_max;
+    else if (adt_is_compatible(adt, 0, "J180dAP") || adt_is_compatible(adt, 0, "J475dAP"))
+        return &display_config_m2_ultra;
+    else
+        return &display_config_m1;
+}
+
 int display_start_dcp(void)
 {
     if (iboot)
         return 0;
 
-    const display_config_t *disp_cfg = &display_config_m1;
+#ifdef NO_DISPLAY
+    printf("display: NO_DISPLAY!\n");
+    return 0;
+#endif
 
-    if (adt_is_compatible(adt, 0, "J473AP"))
-        disp_cfg = &display_config_m2;
-    else if (adt_is_compatible(adt, 0, "J474sAP") || adt_is_compatible(adt, 0, "J475cAP"))
-        disp_cfg = &display_config_m2_pro_max;
-    else if (adt_is_compatible(adt, 0, "J180dAP") || adt_is_compatible(adt, 0, "J475dAP"))
-        disp_cfg = &display_config_m2_ultra;
+    const display_config_t *disp_cfg = display_get_config();
 
     display_is_dptx = !!disp_cfg->dptx_phy[0];
 
@@ -349,6 +370,11 @@ int display_configure(const char *config)
 {
     dcp_timing_mode_t want;
     struct display_options opts = {0};
+
+#ifdef NO_DISPLAY
+    printf("display: skip configuration (NO_DISPLAY)\n");
+    return 0;
+#endif
 
     display_parse_mode(config, &want, &opts);
 
