@@ -38,7 +38,7 @@ static void init_m1_firestorm(void)
     init_common_firestorm();
 
     // "Cross-beat Crypto(AES/PMUL) ICache fusion is not disabled for branch
-    // uncondtional "recoded instruction."
+    // unconditional "recoded instruction."
     reg_set(SYS_IMP_APL_HID0, HID0_FETCH_WIDTH_DISABLE | HID0_CACHE_FUSION_DISABLE);
 
     reg_set(SYS_IMP_APL_HID7, HID7_FORCE_NONSPEC_IF_STEPPING |
@@ -72,7 +72,7 @@ void init_t8103_firestorm(int rev)
         reg_set(SYS_IMP_APL_HID1, HID1_ENABLE_MDSB_STALL_PIPELINE_ECO | HID1_ENABLE_BR_KILL_LIMIT);
 
     if (rev >= 0x11)
-        reg_set(SYS_IMP_APL_HID18, HID18_SPAREBIT17);
+        reg_set(SYS_IMP_APL_HID18, HID18_PREF_REPLAY_DISABLE);
 }
 
 void init_t6000_firestorm(int rev)
@@ -88,7 +88,7 @@ void init_t6000_firestorm(int rev)
         reg_set(SYS_IMP_APL_HID4,
                 HID4_ENABLE_LFSR_STALL_LOAD_PIPE2_ISSUE | HID4_ENABLE_LFSR_STALL_STQ_REPLAY);
 
-        reg_set(SYS_IMP_APL_HID18, HID18_SPAREBIT17);
+        reg_set(SYS_IMP_APL_HID18, HID18_PREF_REPLAY_DISABLE);
     }
 }
 
@@ -108,6 +108,6 @@ void init_t6001_firestorm(int rev)
     if (rev >= 0x10) {
         reg_set(SYS_IMP_APL_HID1, HID1_ENABLE_BR_KILL_LIMIT);
 
-        reg_set(SYS_IMP_APL_HID18, HID18_SPAREBIT17);
+        reg_set(SYS_IMP_APL_HID18, HID18_PREF_REPLAY_DISABLE);
     }
 }
