@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 
-import textwrap, os.path, json, datetime, ctypes
+import textwrap, os.path, json, datetime, ctypes, plistlib
 from .asc import *
 from ..hw.uat import UAT, MemoryAttr, PTE, Page_PTE, TTBR
 from ..hw.agx import *
 
-from ..fw.agx.initdata import InitData
+from ..fw.agx.initdata import InitData, InitData_RegionC
 from ..fw.agx.channels import *
 from ..fw.agx.cmdqueue import *
 from ..fw.agx.microsequence import *
@@ -223,13 +223,24 @@ class CommandQueueTracer(Reloadable):
 
         if info_addr not in tracer.state.queues:
             self.state = CommandQueueState()
+            self.state.last_uuid = None
             self.state.rptr = None
             self.state.active = True
             tracer.state.queues[info_addr] = self.state
         else:
             self.state = tracer.state.queues[info_addr]
 
+        self.tracer.uat.invalidate_cache()
+        self.update_info()
+
         if new_queue:
+            if getattr(self.state, "last_uuid", None) is None:
+                self.state.last_uuid = None
+
+            if self.info.uuid == self.state.last_uuid:
+                return
+
+            self.state.last_uuid = self.info.uuid
             self.state.rptr = 0
 
             if tracer.cmd_dump_dir:
@@ -246,8 +257,6 @@ class CommandQueueTracer(Reloadable):
                 self.dumpfile.flush()
                 tracer.state.queue_seq += 1
 
-        self.tracer.uat.invalidate_cache()
-        self.update_info()
 
     def update_info(self):
         self.info = CommandQueueInfo.parse_stream(self.tracer.get_stream(0, self.info_addr))
@@ -260,7 +269,6 @@ class CommandQueueTracer(Reloadable):
         return self.info.pointers.rb_size
 
     def json_default(self, val):
-        print(repr(val))
         return None
 
     def get_workitems(self, workmsg):
@@ -309,7 +317,7 @@ class CommandQueueTracer(Reloadable):
 CmdBufWork = CmdBufWork._reloadcls()
 CommandQueueTracer = CommandQueueTracer._reloadcls()
 InitData = InitData._reloadcls(True)
-ComputeLayout = ComputeLayout._reloadcls()
+HelperArg = HelperArg._reloadcls()
 
 class HandoffTracer(Tracer):
     DEFAULT_MODE = TraceMode.SYNC
@@ -423,6 +431,16 @@ class AGXTracer(ASCTracer):
         if libagxdecode:
             self.init_agxdecode(libagxdecode)
 
+        self.counters = {}
+        counters = os.getenv("COUNTERS", None)
+        if counters:
+            pl = plistlib.load(open(counters,"rb"))
+            for ctr in pl["DeviceCounters"]:
+                spec = pl[ctr]
+                spec["Name"] = ctr
+                self.counters[(spec['Partition'], spec['Select'])] = spec
+            self.log(f"Loaded {len(self.counters)} performance counters")
+
     def init_agxdecode(self, path):
         # Hack to make sure we reload the lib when it changes
         # tpath = os.getenv("XDG_RUNTIME_DIR", "/tmp") + "/" + str(time.time()) + ".so"
@@ -526,6 +544,7 @@ class AGXTracer(ASCTracer):
         self.uat.foreach_table(ctx, trace_pt)
 
     def clear_gpuvm_tracers(self, ctx=None):
+        self.uat.invalidate_cache()
         if ctx is None:
             for i in range(UAT.NUM_CONTEXTS):
                 self.clear_gpuvm_tracers(i)
@@ -575,6 +594,7 @@ class AGXTracer(ASCTracer):
             self.add_uatmap_tracers(ctx)
             self.add_gpuvm_tracers(ctx)
         else:
+            self.uat.invalidate_cache()
             is_kernel = iova >= 0xf8000000000
             iova += off << (level * 11 + 14)
             if level == 0:
@@ -735,6 +755,8 @@ class AGXTracer(ASCTracer):
         self.mon.add(va, size, name, readfn= lambda a, s: self.uat.ioread(ctx, a, s))
 
     def handle_ringmsg(self, msg):
+        self.uat.invalidate_cache()
+        self.mon.poll()
         if msg.__class__.__name__ == "FlagMsg":
             self.log(f"== Event flag notification ==")
             self.handle_event(msg)
@@ -785,7 +807,50 @@ class AGXTracer(ASCTracer):
             if addr:
                 info = BufferManagerInfo.parse_stream(self.get_stream(0, addr))
                 self.log(f"BM info: {info}")
+        elif msg.__class__.__name__ == "DC_ConfigurePerfCounters":
+            self.configure_perf_counters()
+            self.state.perf_enabled = True
+        elif msg.__class__.__name__ == "DC_DisablePerfCounters":
+            self.state.perf_enabled = False
         return True
+
+    def configure_perf_counters(self):
+        self.log("=== Performance counter config ==")
+        rc = self.state.initdata.regionC = InitData_RegionC.parse_stream(
+            self.get_stream(0, self.state.initdata.regionC._addr))
+        for i in range(rc.perfctr_count):
+            cfg = self.state.initdata.regionC.perfctrs[i]
+            tail = ""
+            partition = cfg.regs & 0x7f
+            if partition == 1:
+                select = (cfg.en_mask << 32) | cfg.dis_mask
+            else:
+                select = cfg.source_mask
+            spec = self.counters.get((partition, cfg.source_mask), None)
+            if spec:
+                tail = f" {spec['Name']} [+{spec['Increment']} {spec['Partition']}/{spec['Select']:x}/{spec.get('SourceMask', 0)}]: {spec['type']}:{spec.get('Description', None)}"
+            self.log(f"#{i:3d} R={cfg.regs:016x} M={cfg.dis_mask:8x}/{cfg.en_mask:8x} S={cfg.source_mask:#10x} B={cfg.base_reg:#x} T={cfg.unk_type} C={cfg.count} idx={cfg.index}{tail}")
+
+        self.dump_perf_counters()
+
+    def dump_perf_counters(self):
+        if not self.state.perf_enabled:
+            return
+
+        rc = self.state.initdata.regionC
+        self.log(f"unk_8890 = {rc.unk_8890:#x}")
+        self.log("=== Performance counter buffers ==")
+        if rc.unkptr_8894 != 0:
+            self.log(f"unkptr_8894 @ {rc.unkptr_8894:#x}")
+            chexdump(self.uat.ioread(0, rc.unkptr_8894, rc.size_889c), print_fn=self.log)
+        if rc.unkptr_88a0 != 0:
+            self.log(f"unkptr_88a0 @ {rc.unkptr_88a0:#x}")
+            chexdump(self.uat.ioread(0, rc.unkptr_88a0, rc.size_889c), print_fn=self.log)
+        if rc.unkptr_88a8 != 0:
+            self.log(f"unkptr_88a8 @ {rc.unkptr_88a8:#x}")
+            chexdump(self.uat.ioread(0, rc.unkptr_88a8, rc.unkptr_88b4 - rc.unkptr_88a8), print_fn=self.log)
+            self.log(f"unkptr_88b4 @ {rc.unkptr_88b4:#x}")
+            chexdump(self.uat.ioread(0, rc.unkptr_88b4, 0x1000), print_fn=self.log)
 
     def handle_event(self, msg):
         if self.last_ta and self.redump:
@@ -797,6 +862,9 @@ class AGXTracer(ASCTracer):
             self.queue_ta.update_info()
             self.log(f"Queue info: {self.queue_ta.info}")
             self.last_ta = None
+            self.dump_perf_counters()
+            if self.state.perf_enabled:
+                self.hv.run_shell()
         if self.last_3d and self.redump:
             self.log("Redumping 3D...")
             stream = self.get_stream(0, self.last_3d._addr)
@@ -806,6 +874,9 @@ class AGXTracer(ASCTracer):
             self.queue_3d.update_info()
             self.log(f"Queue info: {self.queue_3d.info}")
             self.last_3d = None
+            self.dump_perf_counters()
+            if self.state.perf_enabled:
+                self.hv.run_shell()
         if self.last_cp and self.redump:
             self.log("Redumping CP...")
             stream = self.get_stream(0, self.last_cp._addr)
@@ -815,6 +886,9 @@ class AGXTracer(ASCTracer):
             self.queue_cp.update_info()
             self.log(f"Queue info: {self.queue_cp.info}")
             self.last_cp = None
+            self.dump_perf_counters()
+            if self.state.perf_enabled:
+                self.hv.run_shell()
 
     def dump_buffer_manager(self, buffer_mgr, kread, read):
         return
@@ -829,6 +903,18 @@ class AGXTracer(ASCTracer):
         #self.log(f"    unkptr_d8 @ {buffer_mgr.unkptr_d8:#x}:")
         #chexdump(read(buffer_mgr.unkptr_d8, 0x4000), print_fn=self.log)
 
+    def read_func(self, off, size):
+        data = b""
+        while size > 0:
+            boundary = (off + 0x4000) & ~0x3fff
+            block = min(size, boundary - off)
+            try:
+                data += self.uat.ioread(self.cur_context, off & 0x7fff_ffff_ffff_ffff, block)
+            except Exception:
+                break
+            off += block
+            size -= block
+        return data
 
     def handle_ta(self, wi):
         if wi.cmd is None:
@@ -846,27 +932,16 @@ class AGXTracer(ASCTracer):
             #chexdump(kread(wi6.unkptr_14, 0x100), print_fn=self.log)
 
         elif wi.cmd.magic == 0:
+            self.uat.invalidate_cache()
             wi0 = wi.cmd
             context = wi0.context_id
 
-            def read(off, size):
-                data = b""
-                while size > 0:
-                    boundary = (off + 0x4000) & ~0x3fff
-                    block = min(size, boundary - off)
-                    try:
-                        data += self.uat.ioread(context, off & 0x7fff_ffff_ffff_ffff, block)
-                    except Exception:
-                        break
-                    off += block
-                    size -= block
-                return data
-
-            self.read_func = read
+            read = self.read_func
+            self.cur_context = context
 
             #chexdump(kread(wi0.addr, 0x600), print_fn=self.log)
             self.log(f"  context_id = {context:#x}")
-            self.dump_buffer_manager(wi0.buffer_mgr, kread, read)
+            self.dump_buffer_manager(wi0.buffer_mgr, kread, self.read_func)
             self.buffer_mgr_map[wi0.buffer_mgr_slot] = wi0.buffer_mgr_addr
             #self.log(f"  unk_emptybuf @ {wi0.unk_emptybuf_addr:#x}:")
             #chexdump(kread(wi0.unk_emptybuf_addr, 0x1000), print_fn=self.log)
@@ -901,33 +976,40 @@ class AGXTracer(ASCTracer):
             chexdump(read(wi0.buf_thing.unkptr_18, 0x80), print_fn=self.log)
 
             if getattr(wi0, "struct_2", None):
-                data = read(wi0.struct_2.tvb_cluster_meta1, 0x100000)
-                self.log(f"      meta1 @ {wi0.struct_2.tvb_cluster_meta1:#x}:")
-                chexdump(data, print_fn=self.log)
-                blocks = wi0.struct_2.tvb_cluster_meta1 >> 50
-                tc = wi0.tiling_params.tile_count
-                xt = (tc & 0xfff) + 1
-                yt = ((tc >> 12) & 0xfff) + 1
-                self.log(f"      TILES {xt} {yt} {blocks}")
+                if getattr(wi0.struct_2, "tvb_cluster_meta1", None):
+                    data = read(wi0.struct_2.tvb_cluster_meta1, 0x100000)
+                    self.log(f"      meta1 @ {wi0.struct_2.tvb_cluster_meta1:#x}:")
+                    chexdump(data, print_fn=self.log)
+                    blocks = wi0.struct_2.tvb_cluster_meta1 >> 50
+                    tc = wi0.tiling_params.tile_count
+                    xt = (tc & 0xfff) + 1
+                    yt = ((tc >> 12) & 0xfff) + 1
+                    self.log(f"      TILES {xt} {yt} {blocks}")
 
-                self.log(f"      meta2 @ {wi0.struct_2.tvb_cluster_meta2:#x}:")
-                data = read(wi0.struct_2.tvb_cluster_meta2, 0x100000)
-                chexdump(data, print_fn=self.log)
-                self.log(f"      meta3 @ {wi0.struct_2.tvb_cluster_meta3:#x}:")
-                data = read(wi0.struct_2.tvb_cluster_meta3, 0x100000)
-                chexdump(data, print_fn=self.log)
-                self.log(f"      meta4 @ {wi0.struct_2.tvb_cluster_meta4:#x}:")
-                data = read(wi0.struct_2.tvb_cluster_meta4, 0x100000)
-                chexdump(data, print_fn=self.log)
-                data = read(wi0.struct_2.tvb_cluster_tilemaps, 0x400000)
-                self.log(f"      cluster_tilemaps @ {wi0.struct_2.tvb_cluster_tilemaps:#x}: ({len(data):#x})")
-                chexdump(data, print_fn=self.log)
-                data = read(wi0.struct_2.tvb_tilemap, 0x100000)
-                self.log(f"      tilemaps @ {wi0.struct_2.tvb_tilemap:#x}: ({len(data):#x})")
-                chexdump(data, print_fn=self.log)
+                    self.log(f"      meta2 @ {wi0.struct_2.tvb_cluster_meta2:#x}:")
+                    data = read(wi0.struct_2.tvb_cluster_meta2, 0x100000)
+                    chexdump(data, print_fn=self.log)
+                    self.log(f"      meta3 @ {wi0.struct_2.tvb_cluster_meta3:#x}:")
+                    data = read(wi0.struct_2.tvb_cluster_meta3, 0x100000)
+                    chexdump(data, print_fn=self.log)
+                    self.log(f"      meta4 @ {wi0.struct_2.tvb_cluster_meta4:#x}:")
+                    data = read(wi0.struct_2.tvb_cluster_meta4, 0x100000)
+                    chexdump(data, print_fn=self.log)
+                    data = read(wi0.struct_2.tvb_cluster_tilemaps, 0x400000)
+                    self.log(f"      cluster_tilemaps @ {wi0.struct_2.tvb_cluster_tilemaps:#x}: ({len(data):#x})")
+                    chexdump(data, print_fn=self.log)
+                    data = read(wi0.struct_2.tvb_tilemap, 0x100000)
+                    self.log(f"      tilemaps @ {wi0.struct_2.tvb_tilemap:#x}: ({len(data):#x})")
+                    chexdump(data, print_fn=self.log)
+
+                if wi0.struct_2.helper_arg != 0:
+                    data = read(wi0.struct_2.helper_arg, 0x100000)
+                    self.log(f"      helper_arg @ {wi0.struct_2.helper_arg:#x}: ({len(data):#x})")
+                    chexdump(data, print_fn=self.log)
 
                 if self.agxdecode:
                     self.log("Decode VDM")
+                    self.uat.invalidate_cache()
                     self.agxdecode.libagxdecode_vdm(wi0.struct_2.encoder_addr, b"VDM", True)
 
             regs = getattr(wi0, "registers", None)
@@ -945,6 +1027,11 @@ class AGXTracer(ASCTracer):
                         self.log(f"      tilemap @ {reg.data:#x}:")
                         data = read(reg.data, 0x100000)
                         chexdump(data, print_fn=self.log)
+                    elif reg.number == 0x1c880:
+                        if self.agxdecode:
+                            self.log("Decode VDM")
+                            self.uat.invalidate_cache()
+                            self.agxdecode.libagxdecode_vdm(reg.data, b"VDM", True)
 
     def handle_3d(self, wi):
         self.log(f"Got 3D WI{wi.cmdid:d}")
@@ -961,41 +1048,44 @@ class AGXTracer(ASCTracer):
             #self.log(f" completion_buf @ {wi4.completion_buf_addr:#x}: {wi4.completion_buf!s} ")
             #chexdump(kread(wi4.completion_buf_addr, 0x1000), print_fn=self.log)
         elif wi.cmd.magic == 1:
+            self.uat.invalidate_cache()
             wi1 = wi.cmd
             context = wi1.context_id
-            def read(off, size):
-                return self.uat.ioread(context, off, size)
+            self.cur_context = context
+            read = self.read_func
 
             self.log(f" context_id = {context:#x}")
-            cmd3d = wi1.microsequence.value[0].cmd
+            for i in wi1.microsequence.value:
+                i = i.cmd
+                if i.__class__.__name__ == "Start3DCmd":
+                    cmd3d = i
+                    self.log(f" 3D:")
+                    #self.log(f"  struct1 @ {cmd3d.struct1_addr:#x}: {cmd3d.struct1!s}")
+                    #self.log(f"  struct2 @ {cmd3d.struct2_addr:#x}: {cmd3d.struct2!s}")
+                    #self.log(f"    tvb_start_addr @ {cmd3d.struct2.tvb_start_addr:#x}:")
+                    #if cmd3d.struct2.tvb_start_addr:
+                        #chexdump(read(cmd3d.struct2.tvb_start_addr, 0x1000), print_fn=self.log)
+                    #self.log(f"    tvb_tilemap_addr @ {cmd3d.struct2.tvb_tilemap_addr:#x}:")
+                    #if cmd3d.struct2.tvb_tilemap_addr:
+                        #chexdump(read(cmd3d.struct2.tvb_tilemap_addr, 0x1000), print_fn=self.log)
+                    # self.log(f"    aux_fb_ptr @ {cmd3d.struct2.aux_fb_ptr:#x}:")
+                    # chexdump(read(cmd3d.struct2.aux_fb_ptr, 0x100), print_fn=self.log)
+                    #self.log(f"    pipeline_base @ {cmd3d.struct2.pipeline_base:#x}:")
+                    #chexdump(read(cmd3d.struct2.pipeline_base, 0x100), print_fn=self.log)
 
-            self.log(f" 3D:")
-            #self.log(f"  struct1 @ {cmd3d.struct1_addr:#x}: {cmd3d.struct1!s}")
-            #self.log(f"  struct2 @ {cmd3d.struct2_addr:#x}: {cmd3d.struct2!s}")
-            #self.log(f"    tvb_start_addr @ {cmd3d.struct2.tvb_start_addr:#x}:")
-            #if cmd3d.struct2.tvb_start_addr:
-                #chexdump(read(cmd3d.struct2.tvb_start_addr, 0x1000), print_fn=self.log)
-            #self.log(f"    tvb_tilemap_addr @ {cmd3d.struct2.tvb_tilemap_addr:#x}:")
-            #if cmd3d.struct2.tvb_tilemap_addr:
-                #chexdump(read(cmd3d.struct2.tvb_tilemap_addr, 0x1000), print_fn=self.log)
-            #self.log(f"    aux_fb_ptr @ {cmd3d.struct2.aux_fb_ptr:#x}:")
-            #chexdump(read(cmd3d.struct2.aux_fb_ptr, 0x100), print_fn=self.log)
-            #self.log(f"    pipeline_base @ {cmd3d.struct2.pipeline_base:#x}:")
-            #chexdump(read(cmd3d.struct2.pipeline_base, 0x100), print_fn=self.log)
+                    self.log(f"  buf_thing @ {cmd3d.buf_thing_addr:#x}: {cmd3d.buf_thing!s}")
+                    self.log(f"    unkptr_18 @ {cmd3d.buf_thing.unkptr_18:#x}:")
+                    chexdump(read(cmd3d.buf_thing.unkptr_18, 0x80), print_fn=self.log)
 
-            self.log(f"  buf_thing @ {cmd3d.buf_thing_addr:#x}: {cmd3d.buf_thing!s}")
-            self.log(f"    unkptr_18 @ {cmd3d.buf_thing.unkptr_18:#x}:")
-            chexdump(read(cmd3d.buf_thing.unkptr_18, 0x80), print_fn=self.log)
-
-            #self.log(f"  unk_24 @ {cmd3d.unkptr_24:#x}: {cmd3d.unk_24!s}")
-            self.log(f"  struct6 @ {cmd3d.struct6_addr:#x}: {cmd3d.struct6!s}")
-            #self.log(f"    unknown_buffer @ {cmd3d.struct6.unknown_buffer:#x}:")
-            #chexdump(read(cmd3d.struct6.unknown_buffer, 0x1000), print_fn=self.log)
-            self.log(f"  struct7 @ {cmd3d.struct7_addr:#x}: {cmd3d.struct7!s}")
-            self.log(f"  unk_buf_ptr @ {cmd3d.unk_buf_ptr:#x}:")
-            chexdump(kread(cmd3d.unk_buf_ptr, 0x11c), print_fn=self.log)
-            self.log(f"  unk_buf2_ptr @ {cmd3d.unk_buf2_ptr:#x}:")
-            chexdump(kread(cmd3d.unk_buf2_ptr, 0x18), print_fn=self.log)
+                    #self.log(f"  unk_24 @ {cmd3d.unkptr_24:#x}: {cmd3d.unk_24!s}")
+                    self.log(f"  struct6 @ {cmd3d.struct6_addr:#x}: {cmd3d.struct6!s}")
+                    # self.log(f"    unknown_buffer @ {cmd3d.struct6.unknown_buffer:#x}:")
+                    # chexdump(read(cmd3d.struct6.unknown_buffer, 0x1000), print_fn=self.log)
+                    self.log(f"  struct7 @ {cmd3d.struct7_addr:#x}: {cmd3d.struct7!s}")
+                    self.log(f"  unk_buf_ptr @ {cmd3d.unk_buf_ptr:#x}:")
+                    chexdump(kread(cmd3d.unk_buf_ptr, 0x11c), print_fn=self.log)
+                    self.log(f"  unk_buf2_ptr @ {cmd3d.unk_buf2_ptr:#x}:")
+                    chexdump(kread(cmd3d.unk_buf2_ptr, 0x18), print_fn=self.log)
 
             for i in wi1.microsequence.value:
                 i = i.cmd
@@ -1025,7 +1115,47 @@ class AGXTracer(ASCTracer):
             #self.log(f"  unk_emptybuf @ {wi1.unk_emptybuf_addr:#x}:")
             #chexdump(kread(wi1.unk_emptybuf_addr, 0x1000), print_fn=self.log)
             #self.log(f"  tvb_addr @ {wi1.tvb_addr:#x}:")
-            #chexdump(read(wi1.tvb_addr, 0x1000), print_fn=self.log)
+            #chexdump(read(wi0.tvb_addr, 0x1000), print_fn=self.log)
+
+            s2 = getattr(wi1, "struct_2", None)
+            if s2 is not None:
+                if self.agxdecode:
+                    self.log("Decode Load pipeline")
+                    self.uat.invalidate_cache()
+                    self.agxdecode.libagxdecode_usc(s2.clear_pipeline.address & ~0xf,
+                                                    b"Load pipeline", True)
+            #
+            # self.log(f"      depth @ {s2.depth_buffer_ptr2:#x}:")
+            # data = read(s2.depth_buffer_ptr2, 0x100000)
+            # chexdump(data, print_fn=self.log)
+            #
+            # self.log(f"      depth_meta @ {s2.depth_aux_buffer_ptr2:#x}:")
+            # data = read(s2.depth_aux_buffer_ptr2, 0x100000)
+            # chexdump(data, print_fn=self.log)
+
+            s1 = getattr(wi1, "struct_1", None)
+            if s1 is not None:
+                if self.agxdecode:
+                    self.log("Decode Store pipeline")
+                    self.uat.invalidate_cache()
+                    self.agxdecode.libagxdecode_usc(s1.store_pipeline_addr & ~0xf,
+                                                    b"Store pipeline", True)
+
+            regs = getattr(wi1, "registers", None)
+            if regs is not None:
+                for reg in regs:
+                    if reg.number == 0x15371:
+                        if self.agxdecode:
+                            self.log("Decode Load pipeline")
+                            self.uat.invalidate_cache()
+                            self.agxdecode.libagxdecode_usc(reg.data & ~0xf, b"Load pipeline", True)
+                    elif reg.number == 0x15381:
+                        if self.agxdecode:
+                            self.log("Decode Store pipeline")
+                            self.uat.invalidate_cache()
+                            self.agxdecode.libagxdecode_usc(reg.data & ~0xf, b"Store pipeline", True)
+
+
 
     def handle_compute(self, wi):
         self.log("Got Compute Work Item")
@@ -1043,11 +1173,11 @@ class AGXTracer(ASCTracer):
                 return self.uat.ioread(0, off, size)
 
             context = wi3.context_id
+            self.cur_context = context
 
             ci2 = wi3.compute_info2
 
-            def read(off, size):
-                return self.uat.ioread(context, off, size)
+            read = self.read_func
 
             self.log(f" encoder end = {ci2.encoder_end:#x}")
             chexdump(read(ci2.encoder_end, 0x400), print_fn=self.log)
@@ -1064,34 +1194,63 @@ class AGXTracer(ASCTracer):
                 self.log(f" deflake:")
                 chexdump(read(ci.iogpu_deflake_1, 0x8000), print_fn=self.log)
 
+                if ci.helper_arg != 0:
+                    layout = HelperArg.parse_stream(self.get_stream(context, ci.helper_arg))
+                    self.log(f" Layout:")
+                    self.log(f"   core_stride: {layout.core_stride:#x}")
+                    self.log(f"   alloc_size_map: {layout.alloc_size_map}")
+                    self.log(f"   max_subgroups: {layout.max_subgroups}")
+                    self.log(f"   core list: {list(layout.core_list)}")
 
+                    buckets = 16
+                    max_cores = max(layout.core_list) + 1
 
-            if False:#ci.compute_layout_addr != 0:
-                layout = ComputeLayout.parse_stream(self.get_stream(context, ci.compute_layout_addr))
-                self.log(f" Layout:")
-                self.log(f"   unk_0: {layout.unk_0:#x}")
-                self.log(f"   unk_4: {layout.unk_4}")
-                self.log(f"   blocks_per_core: {layout.blocks_per_core}")
-                self.log(f"   unk_28: {layout.unk_28}")
-                self.log(f"   core list: {list(layout.core_list)}")
+                    avail_buckets = sorted(list(set(layout.alloc_size_map)))
+                    max_bucket = max(avail_buckets)
 
-                for core in range(8):
-                    self.log(f"   Core {core}")
-                    for i in range(layout.blocks_per_core):
-                        row = layout.work_lists[core][i]
-                        first = row[0]
-                        if not first & 1:
-                            self.log(f"     [{i:3d}] Missing?")
-                        else:
-                            bits = len(bin(first)[::-1].split("0")[0])
-                            mask = ~((1 << bits) - 1)
-                            block_size = 0x400 << (2 * (bits - 1))
-                            s = [((i & mask) << 8) for i in row if i & 1]
+                    for core in range(max_cores):
+                        core_base = ci.helper_arg + HelperArg.sizeof() + layout.core_stride * 4 * core
+                        layout = HelperArg.parse_stream(self.get_stream(context, ci.helper_arg))
+                        counts = Array(buckets, Int32ul).parse_stream(self.get_stream(context, core_base))
+                        sg_buffers = Array(max_bucket + 1, SubBufferList).parse_stream(self.get_stream(context, core_base + buckets * 4))
+                        self.log(f"   Core {core}")
+                        for bucket in avail_buckets:
+                            max_sg = layout.max_subgroups[bucket]
+                            self.log(f"     Bucket {bucket}")
+                            self.log(f"       Max subgroups: {max_sg}")
+                            self.log(f"       Count: {counts[bucket]}")
+                            buf_list = sg_buffers[bucket]
 
-                            self.log(f"     [{i:3d}] block={block_size:#x} | {' '.join(map(hex, s))}")
-                            for j, block in enumerate(s):
-                                self.log(f"       Block {j}")
-                                chexdump(read(block, block_size), print_fn=self.log)
+                            for i in range(max_sg):
+                                row = buf_list.buffers[i]
+                                first = row[0]
+                                if not first & 1:
+                                    self.log(f"       [{i:3d}] Missing?")
+                                else:
+                                    bits = len(bin(first)[::-1].split("0")[0])
+                                    mask = ~((1 << bits) - 1)
+                                    block_size = 0x400 << (2 * (bits - 1))
+                                    s = [((i & mask) << 8) for i in row if i & 1]
+
+                                    self.log(f"       [{i:3d}] block={block_size:#x} | {' '.join(map(hex, s))}")
+                                    for j, block in enumerate(s):
+                                        self.log(f"         Block {j}")
+                                        chexdump(read(block, block_size), print_fn=self.log)
+
+            regs = getattr(wi3, "registers", None)
+            if regs is not None:
+                for reg in regs:
+                    if reg.number == 0x1a420: # encoder
+                        self.log(f"      encoder @ {reg.data:#x}:")
+                        data = read(reg.data, 0x4000)
+                        chexdump(data, print_fn=self.log)
+
+            if self.agxdecode:
+                if getattr(wi3, "compute_info", None):
+                    ci = wi3.compute_info
+                    self.log("Decode CDM")
+                    self.uat.invalidate_cache()
+                    self.agxdecode.libagxdecode_cdm(ci.encoder, b"CDM", True)
 
     def ignore(self, addr=None):
         if addr is None:
@@ -1219,6 +1378,7 @@ class AGXTracer(ASCTracer):
         self.state.channels = {}
         self.state.queues = {}
         self.state.queue_seq = 0
+        self.state.perf_enabled = False
 
     def init_channels(self):
         if self.channels:
@@ -1255,6 +1415,7 @@ class AGXTracer(ASCTracer):
         self.untrace_uatrange(0, self.state.initdata.regionC_addr, 0x11d40)
 
     def resume(self):
+        self.uat.invalidate_cache()
         self.add_gpuvm_tracers()
         self.add_uatmap_tracers()
         self.add_ttbr_tracers()
@@ -1285,9 +1446,9 @@ class AGXTracer(ASCTracer):
             #self.mon_addva(0, initdata.regionB.unkptr_180, 0x140, "unkptr_180")
             self.mon_addva(0, initdata.regionB.unkptr_190, 0x80, "unkptr_190")
             self.mon_addva(0, initdata.regionB.unkptr_198, 0xc0, "unkptr_198")
-            self.mon_addva(0, initdata.regionB.buffer_mgr_ctl_addr, 0x4000, "Buffer manager ctl")
-            self.mon_addva(0, initdata.unkptr_20.unkptr_0, 0x40, "unkptr_20.unkptr_0")
-            self.mon_addva(0, initdata.unkptr_20.unkptr_8, 0x40, "unkptr_20.unkptr_8")
+            # self.mon_addva(0, initdata.regionB.buffer_mgr_ctl_addr, 0x4000, "Buffer manager ctl")
+            #self.mon_addva(0, initdata.unkptr_20.unkptr_0, 0x40, "unkptr_20.unkptr_0")
+            #self.mon_addva(0, initdata.unkptr_20.unkptr_8, 0x40, "unkptr_20.unkptr_8")
 
     def clear_gpuvm_range(self, ctx, iova, length):
         while length > 0:

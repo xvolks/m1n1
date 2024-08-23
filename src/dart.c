@@ -320,9 +320,22 @@ dart_dev_t *dart_init_adt(const char *path, int instance, int device, bool keep_
                    dart->l1[i]);
         }
     }
-    if (ADT_GETPROP(adt, node, "vm-base", &dart->vm_base) < 0)
-        dart->vm_base = 0;
-    else
+    u32 len;
+    const void *prop = adt_getprop(adt, node, "vm-base", &len);
+    if (prop) {
+        if (len == sizeof(u32)) {
+            u32 tmp;
+            memcpy(&tmp, prop, sizeof(tmp));
+            dart->vm_base = tmp;
+        } else if (len == sizeof(u64)) {
+            u64 tmp;
+            memcpy(&tmp, prop, sizeof(tmp));
+            dart->vm_base = tmp;
+        } else {
+            printf("dart: unexpected length of vm-base property: %u\n", len);
+        }
+    }
+    if (dart->locked)
         dart->vm_base &= (1LLU << 36) - 1;
 
     return dart;
@@ -417,32 +430,57 @@ int dart_setup_pt_region(dart_dev_t *dart, const char *path, int device, u64 vm_
                    tbl_count);
             return -1;
         }
-        /* first index is the l1 table, cap at 2 or else macOS hates it */
-        tbl_count = min(2, tbl_count - 1);
-        u64 l2_start = region[0] + SZ_16K;
+        /* first index may or may not be the l1 table? */
+        u64 l2_free = region[0] + SZ_16K;
+        u64 l2_free_end = region[1];
+
+        /* find the lowest unused L2 PT address */
         u64 vmstart = vm_base >> (14 + 11);
-        for (u64 index = 0; index < tbl_count; index++) {
-            int ttbr = (vmstart + index) >> 11;
-            int idx = (vmstart + index) & 0x7ff;
-            u64 l2tbl = l2_start + index * SZ_16K;
-
-            if (dart->l1[ttbr][idx] & DART_PTE_VALID) {
-                u64 off = FIELD_GET(dart->params->offset_mask, dart->l1[ttbr][idx])
-                          << DART_PTE_OFFSET_SHIFT;
-                if (off != l2tbl)
-                    printf("dart: unexpected L2 tbl at index:%lu. 0x%016lx != 0x%016lx\n", index,
-                           off, l2tbl);
+        int ttbr = (vmstart >> 11) & 3;
+        for (u64 index = 0; index < 2048; index++) {
+            if (!(dart->l1[ttbr][index] & DART_PTE_VALID))
                 continue;
-            } else {
-                printf("dart: allocating L2 tbl at %d, %d to 0x%lx\n", ttbr, idx, l2tbl);
-                memset((void *)l2tbl, 0, SZ_16K);
-            }
-
-            u64 offset = FIELD_PREP(dart->params->offset_mask, l2tbl >> DART_PTE_OFFSET_SHIFT);
-            dart->l1[ttbr][idx] = offset | DART_PTE_VALID;
+            u64 off = FIELD_GET(dart->params->offset_mask, dart->l1[ttbr][index])
+                      << DART_PTE_OFFSET_SHIFT;
+            if (off >= l2_free && off < l2_free_end)
+                l2_free = off + SZ_16K;
         }
 
-        u64 l2_tt[2] = {region[0], tbl_count};
+        /* ensure the first 2 L2 tables are initialized */
+        tbl_count = min(2, tbl_count - 1);
+        for (u64 index = 0; index < tbl_count; index++) {
+            int ttbr = ((vmstart + index) >> 11) & 3;
+            int idx = (vmstart + index) & 0x7ff;
+
+            if (dart->l1[ttbr][idx] & DART_PTE_VALID) {
+                /* m1n1 bug fixup: old versions used to clobber PTs */
+
+                for (int j = 0; j < 2048; j++) {
+                    if (j != idx && dart->l1[ttbr][j] == dart->l1[ttbr][idx]) {
+                        printf("dart: clearing clobbered L1 PTE at %d, %d\n", ttbr, idx);
+                        dart->l1[ttbr][idx] = 0;
+                        break;
+                    }
+                }
+
+                continue;
+            }
+
+            printf("dart: allocating L2 tbl at %d, %d to 0x%lx\n", ttbr, idx, l2_free);
+
+            if (l2_free >= l2_free_end) {
+                printf("dart: out of prealloc page tables\n");
+                return -1;
+            }
+
+            memset((void *)l2_free, 0, SZ_16K);
+
+            u64 offset = FIELD_PREP(dart->params->offset_mask, l2_free >> DART_PTE_OFFSET_SHIFT);
+            dart->l1[ttbr][idx] = offset | DART_PTE_VALID;
+            l2_free += SZ_16K;
+        }
+
+        u64 l2_tt[2] = {region[0], 2};
         int ret = adt_setprop(adt, node, l2_tt_str, &l2_tt, sizeof(l2_tt));
         if (ret < 0) {
             printf("dart: failed to update '%s/%s'\n", path, l2_tt_str);
@@ -478,7 +516,7 @@ static u64 *dart_get_l2(dart_dev_t *dart, u32 idx)
     return tbl;
 }
 
-static int dart_map_page(dart_dev_t *dart, uintptr_t iova, uintptr_t paddr)
+static int dart_map_page(dart_dev_t *dart, uintptr_t iova, uintptr_t paddr, u32 flags)
 {
     u32 l1_index = (iova >> 25) & 0x1fff;
     u32 l2_index = (iova >> 14) & 0x7ff;
@@ -496,12 +534,12 @@ static int dart_map_page(dart_dev_t *dart, uintptr_t iova, uintptr_t paddr)
 
     u64 offset = FIELD_PREP(dart->params->offset_mask, paddr >> DART_PTE_OFFSET_SHIFT);
 
-    l2[l2_index] = offset | dart->params->pte_flags;
+    l2[l2_index] = offset | dart->params->pte_flags | flags;
 
     return 0;
 }
 
-int dart_map(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len)
+int dart_map_flags(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len, u32 flags)
 {
     uintptr_t paddr = (uintptr_t)bfr;
     u64 offset = 0;
@@ -514,7 +552,7 @@ int dart_map(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len)
         return -1;
 
     while (offset < len) {
-        int ret = dart_map_page(dart, iova + offset, paddr + offset);
+        int ret = dart_map_page(dart, iova + offset, paddr + offset, flags);
 
         if (ret) {
             dart_unmap(dart, iova, offset);
@@ -526,6 +564,11 @@ int dart_map(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len)
 
     dart->params->tlb_invalidate(dart);
     return 0;
+}
+
+int dart_map(dart_dev_t *dart, uintptr_t iova, void *bfr, size_t len)
+{
+    return dart_map_flags(dart, iova, bfr, len, 0);
 }
 
 static void dart_unmap_page(dart_dev_t *dart, uintptr_t iova)
@@ -598,9 +641,10 @@ static void *dart_translate_internal(dart_dev_t *dart, uintptr_t iova, int silen
         return NULL;
     }
 
-    if (!(dart->l1[ttbr][l1_index] & DART_PTE_VALID) && !silent) {
-        printf("dart[%lx %u]: l1 translation failure %x %lx\n", dart->regs, dart->device, l1_index,
-               iova);
+    if (!(dart->l1[ttbr][l1_index] & DART_PTE_VALID)) {
+        if (!silent)
+            printf("dart[%lx %u]: l1 translation failure %x %lx\n", dart->regs, dart->device,
+                   l1_index, iova);
         return NULL;
     }
 
@@ -608,9 +652,10 @@ static void *dart_translate_internal(dart_dev_t *dart, uintptr_t iova, int silen
     u64 *l2 = (u64 *)(FIELD_GET(dart->params->offset_mask, dart->l1[ttbr][l1_index])
                       << DART_PTE_OFFSET_SHIFT);
 
-    if (!(l2[l2_index] & DART_PTE_VALID) && !silent) {
-        printf("dart[%lx %u]: l2 translation failure %x:%x %lx\n", dart->regs, dart->device,
-               l1_index, l2_index, iova);
+    if (!(l2[l2_index] & DART_PTE_VALID)) {
+        if (!silent)
+            printf("dart[%lx %u]: l2 translation failure %x:%x %lx\n", dart->regs, dart->device,
+                   l1_index, l2_index, iova);
         return NULL;
     }
 
@@ -624,6 +669,11 @@ static void *dart_translate_internal(dart_dev_t *dart, uintptr_t iova, int silen
 void *dart_translate(dart_dev_t *dart, uintptr_t iova)
 {
     return dart_translate_internal(dart, iova, 0);
+}
+
+void *dart_translate_silent(dart_dev_t *dart, uintptr_t iova)
+{
+    return dart_translate_internal(dart, iova, 1);
 }
 
 u64 dart_search(dart_dev_t *dart, void *paddr)

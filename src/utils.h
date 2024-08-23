@@ -17,8 +17,8 @@
 
 #define ARRAY_SIZE(s) (sizeof(s) / sizeof((s)[0]))
 
-#define ALIGN_UP(x, a)   (((x) + ((a)-1)) & ~((a)-1))
-#define ALIGN_DOWN(x, a) ((x) & ~((a)-1))
+#define ALIGN_UP(x, a)   (((x) + ((a) - 1)) & ~((a) - 1))
+#define ALIGN_DOWN(x, a) ((x) & ~((a) - 1))
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
@@ -390,10 +390,10 @@ typedef struct {
     int count;
 } spinlock_t ALIGNED(SPINLOCK_ALIGN);
 
-#define SPINLOCK_INIT                                                                              \
-    {                                                                                              \
-        -1, 0                                                                                      \
-    }
+// 18.1.6 vs 18.1.1 diff
+// clang-format off
+#define SPINLOCK_INIT       {-1, 0}
+// clang-format on
 #define DECLARE_SPINLOCK(n) spinlock_t n = SPINLOCK_INIT;
 
 void spin_init(spinlock_t *lock);
