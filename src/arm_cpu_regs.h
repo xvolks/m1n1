@@ -2,9 +2,10 @@
 
 #include "types.h"
 
-#define SYS_ACTLR_EL1 sys_reg(3, 0, 1, 0, 1)
-#define SYS_ACTLR_EL2 sys_reg(3, 4, 1, 0, 1)
-#define SYS_ACTLR_EL3 sys_reg(3, 6, 1, 0, 1)
+#define SYS_ACTLR_EL1  sys_reg(3, 0, 1, 0, 1)
+#define SYS_ACTLR_EL2  sys_reg(3, 4, 1, 0, 1)
+#define SYS_ACTLR_EL3  sys_reg(3, 6, 1, 0, 1)
+#define SYS_ACTLR_EL12 sys_reg(3, 5, 1, 0, 1)
 
 #define SYS_CNTHCTL_EL2 sys_reg(3, 4, 14, 1, 0)
 // HCR_EL2.E2H == 1
@@ -308,6 +309,7 @@
 #define TCR_IPS_16TB   0b100UL
 #define TCR_TG1        GENMASK(31, 30)
 #define TCR_TG1_16K    0b01UL
+#define TCR_TG1_4K     0b10UL
 #define TCR_SH1        GENMASK(29, 28)
 #define TCR_SH1_IS     0b11UL
 #define TCR_ORGN1      GENMASK(27, 26)
@@ -320,6 +322,7 @@
 #define TCR_T1SZ_48BIT 16UL
 #define TCR_TG0        GENMASK(15, 14)
 #define TCR_TG0_16K    0b10UL
+#define TCR_TG0_4K     0b0UL
 #define TCR_SH0        GENMASK(13, 12)
 #define TCR_SH0_IS     0b11UL
 #define TCR_ORGN0      GENMASK(11, 10)

@@ -101,10 +101,14 @@ OBJECTS := \
 	chickens.o \
 	chickens_avalanche.o \
 	chickens_blizzard.o \
+	chickens_cyclone_typhoon.o \
 	chickens_everest.o \
 	chickens_firestorm.o \
+	chickens_hurricane_zephyr.o \
+	chickens_monsoon_mistral.o \
 	chickens_icestorm.o \
 	chickens_sawtooth.o \
+	chickens_twister.o \
 	clk.o \
 	cpufreq.o \
 	dapf.o \
@@ -193,7 +197,7 @@ build/%.o: src/%.S
 	$(QUIET)echo "  AS    $@"
 	$(QUIET)mkdir -p $(DEPDIR)
 	$(QUIET)mkdir -p "$(dir $@)"
-	$(QUIET)$(AS) -c $(CFLAGS) -MMD -MF $(DEPDIR)/$(*F).d -MQ "$@" -MP -o $@ $<
+	$(QUIET)$(AS) -c $(BASE_CFLAGS) -MMD -MF $(DEPDIR)/$(*F).d -MQ "$@" -MP -o $@ $<
 
 $(BUILD_FP_OBJS): build/%.o: src/%.c
 	$(QUIET)echo "  CC FP $@"

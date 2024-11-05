@@ -26,8 +26,12 @@ struct aic {
     uint32_t nr_die;
     uint32_t max_irq;
     uint32_t max_die;
-    uint32_t die_stride;
+    uint32_t extintrcfg_stride;
+    uint32_t intmaskset_stride;
+    uint32_t intmaskclear_stride;
 
+    int32_t cap0_offset;
+    int32_t maxnumirq_offset;
     struct aic_regs regs;
 };
 
@@ -35,6 +39,7 @@ extern struct aic *aic;
 
 void aic_init(void);
 void aic_set_sw(int irq, bool active);
+void aic_write(u32 reg, u32 val);
 uint32_t aic_ack(void);
 
 #endif

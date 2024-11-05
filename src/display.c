@@ -8,6 +8,7 @@
 #include "dcp.h"
 #include "dcp_iboot.h"
 #include "fb.h"
+#include "firmware.h"
 #include "memory.h"
 #include "soc.h"
 #include "string.h"
@@ -31,6 +32,7 @@ static u64 fb_dva;
 static u64 fb_size;
 bool display_is_external;
 bool display_is_dptx;
+bool display_needs_power_cycle;
 
 static const display_config_t display_config_m1 = {
     .dcp = "/arm-io/dcp",
@@ -262,6 +264,11 @@ int display_start_dcp(void)
     return 0;
 #endif
 
+    if (!has_dcp) {
+        printf("display: DCP not present\n");
+        return -1;
+    }
+
     const display_config_t *disp_cfg = display_get_config();
 
     display_is_dptx = !!disp_cfg->dptx_phy[0];
@@ -401,6 +408,12 @@ int display_configure(const char *config)
     }
 
     if (!display_is_external) {
+        // Sequoia bug workaround: Force power cycle
+        if (display_needs_power_cycle) {
+            if ((ret = dcp_ib_set_power(iboot, false)) < 0)
+                printf("display: failed to set power off (continuing anyway)\n");
+            mdelay(100);
+        }
         // Sonoma bug workaround: Power on internal panel early
         if ((ret = dcp_ib_set_power(iboot, true)) < 0)
             printf("display: failed to set power on (continuing anyway)\n");
@@ -592,6 +605,16 @@ int display_init(void)
     else
         disp_path = "/arm-io/disp0";
 
+    bool has_notch = false;
+    int product = adt_path_offset(adt, "/product");
+    if (product < 0) {
+        printf("/product node not found!\n");
+    } else {
+        u32 val = 0;
+        ADT_GETPROP(adt, product, "partially-occluded-display", &val);
+        has_notch = !!val;
+    }
+
     int node = adt_path_offset(adt, disp_path);
     if (node < 0) {
         printf("%s node not found!\n", disp_path);
@@ -604,17 +627,25 @@ int display_init(void)
     else
         printf("display: Display is internal\n");
 
-    if (cur_boot_args.video.width == 640 && cur_boot_args.video.height == 1136) {
+    if ((cur_boot_args.video.width == 640 && cur_boot_args.video.height == 1136) &&
+        chip_id != S5L8960X) {
         printf("display: Dummy framebuffer found, initializing display\n");
         return display_configure(NULL);
-    } else if (display_is_external) {
+    } else if (display_is_external && is_mac) {
         printf("display: External display found, reconfiguring\n");
         return display_configure(NULL);
-    } else if (!(cur_boot_args.video.depth & FB_DEPTH_FLAG_RETINA)) {
+    } else if ((!(cur_boot_args.video.depth & FB_DEPTH_FLAG_RETINA)) && is_mac) {
         printf("display: Internal display with non-retina flag, assuming Sonoma bug and "
                "reconfiguring\n");
         fb_clear_direct(); // Old m1n1 stage1 ends up with an ugly logo situation, clear it.
         return display_configure(NULL);
+#ifndef CHAINLOADING
+    } else if (!has_notch && firmware_sfw_in_range(V15_0B1, FW_MAX) &&
+               os_firmware.version < V15_0B1) {
+        printf("display: Internal display on t8103 or t8112 with Sequoia SFW, power cycling\n");
+        display_needs_power_cycle = true;
+        return display_configure(NULL);
+#endif
     } else {
         printf("display: Display is already initialized (%ldx%ld)\n", cur_boot_args.video.width,
                cur_boot_args.video.height);

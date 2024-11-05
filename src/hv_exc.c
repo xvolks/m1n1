@@ -209,9 +209,8 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
     regs[31] = 0;
 
     switch (reg) {
-        /* Some kind of timer */
-        SYSREG_PASS(sys_reg(3, 7, 15, 1, 1));
-        SYSREG_PASS(sys_reg(3, 7, 15, 3, 1));
+        SYSREG_PASS(SYS_IMP_APL_CORE_NRG_ACC_DAT);
+        SYSREG_PASS(SYS_IMP_APL_CORE_SRM_NRG_ACC_DAT);
         /* Architectural timer, for ECV */
         SYSREG_MAP(SYS_CNTV_CTL_EL0, SYS_CNTV_CTL_EL02)
         SYSREG_MAP(SYS_CNTV_CVAL_EL0, SYS_CNTV_CVAL_EL02)
@@ -220,6 +219,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
         SYSREG_MAP(SYS_CNTP_CVAL_EL0, SYS_CNTP_CVAL_EL02)
         SYSREG_MAP(SYS_CNTP_TVAL_EL0, SYS_CNTP_TVAL_EL02)
         /* Spammy stuff seen on t600x p-cores */
+        /* These are PMU/PMC registers */
         SYSREG_PASS(sys_reg(3, 2, 15, 12, 0));
         SYSREG_PASS(sys_reg(3, 2, 15, 13, 0));
         SYSREG_PASS(sys_reg(3, 2, 15, 14, 0));
@@ -229,10 +229,9 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
         SYSREG_PASS(sys_reg(3, 1, 15, 9, 0));
         SYSREG_PASS(sys_reg(3, 1, 15, 10, 0));
         /* Noisy traps */
-        SYSREG_MAP(SYS_ACTLR_EL1, SYS_IMP_APL_ACTLR_EL12)
         SYSREG_PASS(SYS_IMP_APL_HID4)
         SYSREG_PASS(SYS_IMP_APL_EHID4)
-        /* We don't normally trap hese, but if we do, they're noisy */
+        /* We don't normally trap these, but if we do, they're noisy */
         SYSREG_PASS(SYS_IMP_APL_GXF_STATUS_EL1)
         SYSREG_PASS(SYS_IMP_APL_CNTVCT_ALIAS_EL0)
         SYSREG_PASS(SYS_IMP_APL_TPIDR_GL1)
@@ -244,7 +243,7 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
         SYSREG_MAP(SYS_IMP_APL_APCTL_EL1, SYS_IMP_APL_APCTL_EL12)
         SYSREG_MAP(SYS_IMP_APL_AMX_CTL_EL1, SYS_IMP_APL_AMX_CTL_EL12)
         /* FIXME:Might be wrong */
-        SYSREG_PASS(sys_reg(3, 4, 15, 1, 3))
+        SYSREG_PASS(SYS_IMP_APL_AMX_STATE_T)
         /* pass through PMU handling */
         SYSREG_PASS(SYS_IMP_APL_PMCR1)
         SYSREG_PASS(SYS_IMP_APL_PMCR2)
@@ -271,6 +270,20 @@ static bool hv_handle_msr_unlocked(struct exc_info *ctx, u64 iss)
         SYSREG_PASS(sys_reg(1, 0, 8, 1, 1)) // TLBI VAE1OS
         SYSREG_PASS(sys_reg(1, 0, 8, 1, 2)) // TLBI ASIDE1OS
         SYSREG_PASS(sys_reg(1, 0, 8, 5, 1)) // TLBI RVAE1OS
+
+        case SYSREG_ISS(SYS_ACTLR_EL1):
+            if (is_read) {
+                if (cpufeat_actlr_el2)
+                    regs[rt] = mrs(SYS_ACTLR_EL12);
+                else
+                    regs[rt] = mrs(SYS_IMP_APL_ACTLR_EL12);
+            } else {
+                if (cpufeat_actlr_el2)
+                    msr(SYS_ACTLR_EL12, regs[rt]);
+                else
+                    msr(SYS_IMP_APL_ACTLR_EL12, regs[rt]);
+            }
+            return true;
 
         case SYSREG_ISS(SYS_IMP_APL_IPI_SR_EL1):
             if (is_read)
@@ -509,7 +522,7 @@ void hv_exc_fiq(struct exc_info *ctx)
 
     int interruptible_cpu = hv_pinned_cpu;
     if (interruptible_cpu == -1)
-        interruptible_cpu = 0;
+        interruptible_cpu = boot_cpu_idx;
 
     if (smp_id() != interruptible_cpu && !(mrs(ISR_EL1) & 0x40) && hv_want_cpu == -1) {
         // Non-interruptible CPU and it was just a timer tick (or spurious), so just update FIQs

@@ -104,14 +104,42 @@ static inline rgb_t pixel2rgb_30(u32 c)
     return (rgb_t){(c >> 22) & 0xff, (c >> 12) & 0xff, c >> 2};
 }
 
+static inline u32 rgb2pixel_24(rgb_t c)
+{
+    return c.b | (c.g << 8) | (c.r << 16);
+}
+
+static inline rgb_t pixel2rgb_24(u32 c)
+{
+    return (rgb_t){(c >> 16) & 0xff, (c >> 8) & 0xff, c};
+}
+
+static inline u32 rgb2pixel(rgb_t c)
+{
+    if ((cur_boot_args.video.depth & 0xff) == 32) {
+        return rgb2pixel_24(c);
+    } else {
+        return rgb2pixel_30(c);
+    }
+}
+
+static inline rgb_t pixel2rgb(u32 c)
+{
+    if ((cur_boot_args.video.depth & 0xff) == 32) {
+        return pixel2rgb_24(c);
+    } else {
+        return pixel2rgb_30(c);
+    }
+}
+
 static inline void fb_set_pixel(u32 x, u32 y, rgb_t c)
 {
-    fb.ptr[x + y * fb.stride] = rgb2pixel_30(c);
+    fb.ptr[x + y * fb.stride] = rgb2pixel(c);
 }
 
 static inline rgb_t fb_get_pixel(u32 x, u32 y)
 {
-    return pixel2rgb_30(fb.ptr[x + y * fb.stride]);
+    return pixel2rgb(fb.ptr[x + y * fb.stride]);
 }
 
 void fb_blit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride, pix_fmt_t pix_fmt)
@@ -144,6 +172,9 @@ void fb_unblit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride)
 {
     u8 *p = data;
 
+    if (!console.initialized)
+        return;
+
     for (u32 i = 0; i < h; i++) {
         for (u32 j = 0; j < w; j++) {
             rgb_t color = fb_get_pixel(x + j, y + i);
@@ -157,7 +188,10 @@ void fb_unblit(u32 x, u32 y, u32 w, u32 h, void *data, u32 stride)
 
 void fb_fill(u32 x, u32 y, u32 w, u32 h, rgb_t color)
 {
-    u32 c = rgb2pixel_30(color);
+    if (!console.initialized)
+        return;
+
+    u32 c = rgb2pixel(color);
     for (u32 i = 0; i < h; i++)
         memset32(&fb.ptr[x + (y + i) * fb.stride], c, w * 4);
     fb_update();
@@ -165,34 +199,52 @@ void fb_fill(u32 x, u32 y, u32 w, u32 h, rgb_t color)
 
 void fb_clear(rgb_t color)
 {
-    u32 c = rgb2pixel_30(color);
+    if (!console.initialized)
+        return;
+
+    u32 c = rgb2pixel(color);
     memset32(fb.ptr, c, fb.stride * fb.height * 4);
     fb_update();
 }
 
 void fb_blit_image(u32 x, u32 y, const struct image *img)
 {
+    if (!console.initialized)
+        return;
+
     fb_blit(x, y, img->width, img->height, img->ptr, img->width, PIX_FMT_XRGB);
 }
 
 void fb_unblit_image(u32 x, u32 y, struct image *img)
 {
+    if (!console.initialized)
+        return;
+
     fb_unblit(x, y, img->width, img->height, img->ptr, img->width);
 }
 
 void fb_blit_logo(const struct image *logo)
 {
+    if (!console.initialized)
+        return;
+
     fb_blit_image((fb.width - logo->width) / 2, (fb.height - logo->height) / 2, logo);
 }
 
 void fb_display_logo(void)
 {
+    if (!console.initialized)
+        return;
+
     printf("fb: display logo\n");
     fb_blit_logo(logo);
 }
 
 void fb_restore_logo(void)
 {
+    if (!console.initialized)
+        return;
+
     if (!orig_logo.ptr)
         return;
     fb_blit_logo(&orig_logo);
@@ -259,6 +311,9 @@ static void fb_putchar(u8 c)
 
 void fb_console_scroll(u32 n)
 {
+    if (!console.initialized)
+        return;
+
     u32 row = 0;
     n = min(n, console.cursor.row);
     for (; row < console.cursor.max_row - n; ++row)
@@ -270,6 +325,9 @@ void fb_console_scroll(u32 n)
 
 void fb_console_reserve_lines(u32 n)
 {
+    if (!console.initialized)
+        return;
+
     if ((console.cursor.max_row - console.cursor.row) <= n)
         fb_console_scroll(1 + n - (console.cursor.max_row - console.cursor.row));
     fb_update();
@@ -370,17 +428,28 @@ void fb_init(bool clear)
                         &orig_logo);
     }
 
-    if (clear)
+    if (clear) {
         memset32(fb.ptr, 0, fb.size);
+    } else {
+        // Workaround for m1n1 stage 1 framebuffer UAF bug
+        memset32(fb.ptr, 0, min(256, fb.size));
+    }
 
     console.margin.rows = 2;
     console.margin.cols = 4;
     console.cursor.col = 0;
     console.cursor.row = 0;
 
-    console.cursor.max_row = (fb.height / console.font.height) - 2 * console.margin.rows;
-    console.cursor.max_col =
-        ((fb.width - logo->width) / 2) / console.font.width - 2 * console.margin.cols;
+    if (fb.height < fb.width) {
+        console.cursor.max_row = (fb.height / console.font.height) - 2 * console.margin.rows;
+        console.cursor.max_col =
+            ((fb.width - logo->width) / 2) / console.font.width - 2 * console.margin.cols;
+    } else { // there aren't much screen real estate for us to waste here
+        console.cursor.max_row = (fb.height / console.font.height);
+        console.cursor.max_col = (fb.width / console.font.width);
+        console.margin.rows = 0;
+        console.margin.cols = 0;
+    }
 
     console.initialized = true;
     console.active = false;
@@ -404,7 +473,6 @@ void fb_shutdown(bool restore_logo)
         return;
 
     console.active = false;
-    console.initialized = false;
     fb_clear_console();
     if (restore_logo) {
         fb_restore_logo();
@@ -412,6 +480,7 @@ void fb_shutdown(bool restore_logo)
         orig_logo.ptr = NULL;
     }
     free(fb.ptr);
+    console.initialized = false;
 }
 
 void fb_reinit(void)
