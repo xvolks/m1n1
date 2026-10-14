@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "usb.h"
 #include "adt.h"
@@ -25,16 +25,61 @@ struct usb_drd_regs {
 #error "USB_IODEV_COUNT is limited to 100 to prevent overflow in ADT path names"
 #endif
 
+static int first_usb_iodev = !!USE_DEBUG_USB;
+
 // length of the format string is is used as buffer size
 // limits the USB instance numbers to reasonable 2 digits
 #define FMT_DART_PATH        "/arm-io/dart-usb%u"
 #define FMT_DART_MAPPER_PATH "/arm-io/dart-usb%u/mapper-usb%u"
 #define FMT_ATC_PATH         "/arm-io/atc-phy%u"
 #define FMT_DRD_PATH         "/arm-io/usb-drd%u"
-#define FMT_HPM_PATH         "/arm-io/i2c0/hpmBusManager/hpm%u"
+// HPM_PATH string is at most
+// "/arm-io/i2cX" (12) + "/" + hpmBusManagerX (14) + "/" + "hpmX" (4) + '\0'
+#define MAX_HPM_PATH_LEN 40
 
 static tps6598x_irq_state_t tps6598x_irq_state[USB_IODEV_COUNT];
 static bool usb_is_initialized = false;
+
+/* USB2 PHY regs */
+#define USB2PHY_USBCTL           0x00
+#define USB2PHY_USBCTL_USB_MODE  0x7
+#define USB2PHY_USBCTL_RUN       2
+#define USB2PHY_USBCTL_ISOLATION 4
+
+#define USB2PHY_CTL             0x04
+#define USB2PHY_CTL_RESET       BIT(0)
+#define USB2PHY_CTL_PORT_RESET  BIT(1)
+#define USB2PHY_CTL_APB_RESET_N BIT(2)
+#define USB2PHY_CTL_SIDDQ       BIT(3)
+
+#define USB2PHY_SIG                      0x08
+#define USB2PHY_SIG_VBUSDET_FORCE_VAL    BIT(0)
+#define USB2PHY_SIG_VBUSDET_FORCE_EN     BIT(1)
+#define USB2PHY_SIG_VBUSVLDEXT_FORCE_VAL BIT(2)
+#define USB2PHY_SIG_VBUSVLDEXT_FORCE_EN  BIT(3)
+#define USB2PHY_SIG_HOST                 (7 << 12)
+
+#define USB2PHY_MISCTUNE                 0x1c
+#define USB2PHY_MISCTUNE_APBCLK_GATE_OFF BIT(29)
+#define USB2PHY_MISCTUNE_REFCLK_GATE_OFF BIT(30)
+
+#define PIPEHANDLER_MUX_CTRL             0x0c
+#define PIPEHANDLER_MUX_CTRL_USB3        0x08
+#define PIPEHANDLER_MUX_CTRL_USB4_TUNNEL 0x11
+#define PIPEHANDLER_MUX_CTRL_DUMMY       0x22
+
+#define PIPEHANDLER_LOCK_REQ 0x10
+#define PIPEHANDLER_LOCK_ACK 0x14
+#define PIPEHANDLER_LOCK_EN  BIT(0)
+
+#define PIPEHANDLER_AON_GEN                     0x1C
+#define PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN BIT(4)
+#define PIPEHANDLER_AON_GEN_DWC3_RESET_N        BIT(0)
+
+#define PIPEHANDLER_NONSELECTED_OVERRIDE 0x20
+#define PIPEHANDLER_NATIVE_RESET         BIT(12)
+#define PIPEHANDLER_DUMMY_PHY_EN         BIT(15)
+#define PIPEHANDLER_NATIVE_POWER_DOWN    GENMASK(3, 0)
 
 static dart_dev_t *usb_dart_init(u32 idx)
 {
@@ -120,16 +165,16 @@ int usb_phy_bringup(u32 idx)
     if (pmgr_adt_power_enable(path) < 0)
         return -1;
 
-    write32(usb_regs.atc + 0x08, 0x01c1000f);
-    write32(usb_regs.atc + 0x04, 0x00000003);
-    write32(usb_regs.atc + 0x04, 0x00000000);
-    write32(usb_regs.atc + 0x1c, 0x008c0813);
-    write32(usb_regs.atc + 0x00, 0x00000002);
+    write32(usb_regs.atc + USB2PHY_SIG, 0x01c1000f);
+    write32(usb_regs.atc + USB2PHY_CTL, USB2PHY_CTL_RESET | USB2PHY_CTL_PORT_RESET);
+    clear32(usb_regs.atc + USB2PHY_CTL, USB2PHY_CTL_RESET);
+    clear32(usb_regs.atc + USB2PHY_CTL, USB2PHY_CTL_PORT_RESET);
+    write32(usb_regs.atc + USB2PHY_MISCTUNE, 0x008c0813);
+    write32(usb_regs.atc + USB2PHY_USBCTL, USB2PHY_USBCTL_RUN);
 
-    write32(usb_regs.drd_regs_unk3 + 0x0c, 0x00000002);
-    write32(usb_regs.drd_regs_unk3 + 0x0c, 0x00000022);
-    write32(usb_regs.drd_regs_unk3 + 0x1c, 0x00000021);
-    write32(usb_regs.drd_regs_unk3 + 0x20, 0x00009332);
+    write32(usb_regs.drd_regs_unk3 + PIPEHANDLER_MUX_CTRL, PIPEHANDLER_MUX_CTRL_DUMMY);
+    write32(usb_regs.drd_regs_unk3 + PIPEHANDLER_AON_GEN, PIPEHANDLER_AON_GEN_DWC3_RESET_N);
+    write32(usb_regs.drd_regs_unk3 + PIPEHANDLER_NONSELECTED_OVERRIDE, 0x9332);
 
     return 0;
 }
@@ -212,46 +257,47 @@ struct iodev iodev_usb_vuart = {
     .lock = SPINLOCK_INIT,
 };
 
-static tps6598x_dev_t *hpm_init(i2c_dev_t *i2c, const char *hpm_path)
+static int hpm_idx(char *hpm_path)
 {
-    tps6598x_dev_t *tps = tps6598x_init(hpm_path, i2c);
-    if (!tps) {
-        printf("usb: tps6598x_init failed for %s.\n", hpm_path);
-        return NULL;
-    }
-
-    if (tps6598x_powerup(tps) < 0) {
-        printf("usb: tps6598x_powerup failed for %s.\n", hpm_path);
-        tps6598x_shutdown(tps);
-        return NULL;
-    }
-
-    return tps;
+    const char *name = strrchr(hpm_path, '/');
+    if (!name)
+        return -1;
+    if (strncmp(name + 1, "hpm", 3) != 0)
+        return -1; // unexpected hpm node name
+    u8 idx = name[4] - '0';
+    if (idx > 9)
+        return -2; // unexpected hpm index
+    return idx;
 }
 
-void usb_spmi_init(void)
+static bool usb_init_match(char *hpm_path, void *)
 {
-    for (int idx = 0; idx < USB_IODEV_COUNT; ++idx)
-        usb_phy_bringup(idx); /* Fails on missing devices, just continue */
+    int idx = hpm_idx(hpm_path);
+    // skip hpm0 depending on whether DEBUG_USB is in use or not
+    if (idx < first_usb_iodev)
+        return false;
+    if (idx > USB_IODEV_COUNT)
+        return false;
+    return true;
+}
 
-    usb_is_initialized = true;
+static int usb_init_one(char *hpm_path, tps6598x_dev_t *tps, void *)
+{
+    int idx = hpm_idx(hpm_path);
+
+    if (tps6598x_powerup(tps) < 0)
+        printf("usb: tps6598x_powerup failed for %s.\n", hpm_path);
+
+    if (tps6598x_disable_irqs(tps, &tps6598x_irq_state[idx]))
+        printf("usb: unable to disable IRQ masks for %s.\n", hpm_path);
+
+    return 0;
 }
 
 void usb_init(void)
 {
-    char hpm_path[sizeof(FMT_HPM_PATH)];
-
     if (usb_is_initialized)
         return;
-
-    /*
-     * M3 models do not use i2c, but instead SPMI with a new controller.
-     * We can get USB going for now by just bringing up the phys.
-     */
-    if (adt_path_offset(adt, "/arm-io/nub-spmi-a0/hpm0") > 0) {
-        usb_spmi_init();
-        return;
-    }
 
     /*
      * A7-A11 uses a custom internal otg controller with the peripheral part
@@ -263,29 +309,7 @@ void usb_init(void)
         return;
     }
 
-    i2c_dev_t *i2c = i2c_init("/arm-io/i2c0");
-    if (!i2c) {
-        printf("usb: i2c init failed.\n");
-        return;
-    }
-
-    for (u32 idx = 0; idx < USB_IODEV_COUNT; ++idx) {
-        snprintf(hpm_path, sizeof(hpm_path), FMT_HPM_PATH, idx);
-        if (adt_path_offset(adt, hpm_path) < 0)
-            continue; // device not present
-        tps6598x_dev_t *tps = hpm_init(i2c, hpm_path);
-        if (!tps) {
-            printf("usb: failed to init hpm%d\n", idx);
-            continue;
-        }
-
-        if (tps6598x_disable_irqs(tps, &tps6598x_irq_state[idx]))
-            printf("usb: unable to disable IRQ masks for hpm%d\n", idx);
-
-        tps6598x_shutdown(tps);
-    }
-
-    i2c_shutdown(i2c);
+    tps6598x_foreach_hpm(usb_init_match, usb_init_one, NULL, true);
 
     for (int idx = 0; idx < USB_IODEV_COUNT; ++idx)
         usb_phy_bringup(idx); /* Fails on missing devices, just continue */
@@ -293,41 +317,48 @@ void usb_init(void)
     usb_is_initialized = true;
 }
 
+static bool usb_hpm_restore_irqs_match(char *hpm_path, void *state)
+{
+    int idx = hpm_idx(hpm_path);
+    // skip hpm0 depending on whether DEBUG_USB is in use or not
+    if (idx < first_usb_iodev)
+        return false;
+
+    bool force = *(bool *)state;
+    if (iodev_get_usage(IODEV_USB0 + idx) && !force)
+        return false;
+
+    if (!tps6598x_irq_state[idx].valid)
+        return false;
+
+    return true;
+}
+
+static int usb_hpm_restore_irqs_one(char *hpm_path, tps6598x_dev_t *tps, void *)
+{
+    int idx = hpm_idx(hpm_path);
+
+    if (tps6598x_restore_irqs(tps, &tps6598x_irq_state[idx]))
+        printf("usb: unable to restore IRQ masks for %s\n", hpm_path);
+
+    return 0;
+}
+
 void usb_hpm_restore_irqs(bool force)
 {
-    char hpm_path[sizeof(FMT_HPM_PATH)];
-
-    i2c_dev_t *i2c = i2c_init("/arm-io/i2c0");
-    if (!i2c) {
-        printf("usb: i2c init failed.\n");
+    /*
+     * Do not try to restore irqs on A7-A11 which don't use i2c
+     */
+    if (adt_path_offset(adt, "/arm-io/otgphyctrl") > 0 &&
+        adt_path_offset(adt, "/arm-io/usb-complex") > 0)
         return;
-    }
 
-    for (u32 idx = 0; idx < USB_IODEV_COUNT; ++idx) {
-        if (iodev_get_usage(IODEV_USB0 + idx) && !force)
-            continue;
-
-        if (tps6598x_irq_state[idx].valid) {
-            snprintf(hpm_path, sizeof(hpm_path), FMT_HPM_PATH, idx);
-            if (adt_path_offset(adt, hpm_path) < 0)
-                continue; // device not present
-            tps6598x_dev_t *tps = hpm_init(i2c, hpm_path);
-            if (!tps)
-                continue;
-
-            if (tps6598x_restore_irqs(tps, &tps6598x_irq_state[idx]))
-                printf("usb: unable to restore IRQ masks for hpm%d\n", idx);
-
-            tps6598x_shutdown(tps);
-        }
-    }
-
-    i2c_shutdown(i2c);
+    tps6598x_foreach_hpm(usb_hpm_restore_irqs_match, usb_hpm_restore_irqs_one, &force, true);
 }
 
 void usb_iodev_init(void)
 {
-    for (int i = 0; i < USB_IODEV_COUNT; i++) {
+    for (int i = first_usb_iodev; i < USB_IODEV_COUNT; i++) {
         dwc3_dev_t *opaque;
         struct iodev *usb_iodev;
 
@@ -351,7 +382,7 @@ void usb_iodev_init(void)
 
 void usb_iodev_shutdown(void)
 {
-    for (int i = 0; i < USB_IODEV_COUNT; i++) {
+    for (int i = first_usb_iodev; i < USB_IODEV_COUNT; i++) {
         struct iodev *usb_iodev = iodev_unregister_device(IODEV_USB0 + i);
         if (!usb_iodev)
             continue;
@@ -368,4 +399,22 @@ void usb_iodev_vuart_setup(iodev_id_t iodev)
         return;
 
     iodev_usb_vuart.opaque = iodev_get_opaque(iodev);
+}
+
+int usb_enable_debugusb(void)
+{
+    if (usb_is_initialized) {
+        printf("usb: debugusb can not be enabled after USB is initialized\n");
+        return -1;
+    }
+
+    first_usb_iodev = 1;
+    tps6598x_enable_debugusb();
+    printf("usb: waiting 1000ms after enabling debugusb\n");
+    mdelay(1000);
+
+    // reset console read pointer to replay the console log
+    iodev_reset_rp(IODEV_DOCKCHANNEL_UART);
+
+    return 0;
 }

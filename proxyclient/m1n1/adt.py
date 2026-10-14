@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import itertools, fnmatch, sys
 from construct import *
 import sys
@@ -85,8 +85,16 @@ PMGRDevices = SafeGreedyRange(Struct(
     "flags" / PMGRDeviceFlags,
     "unk1_0" / Int8ul,
     "unk1_1" / Int8ul,
-    "unk1_2" / Int8ul,
-    "parents" / Array(2, Int16ul),
+    "id1" / Int8ul,
+    "parents_un" / Union (0,
+        "u8id" / Struct(
+            "parents" / Array(2, Int8ul),
+            "unk_u8id" / Array(2, Int8ul),
+        ),
+        "u16id" / Struct (
+            "parents" / Array(2, Int16ul),
+        ),
+    ),
     "perf_idx" / Int8ul,
     "perf_block" / Int8ul,
     "psidx" / Int8ul,
@@ -94,10 +102,11 @@ PMGRDevices = SafeGreedyRange(Struct(
     "unk2_0" / Int16ul,
     "pd" / Int8ul,
     "ps_cfg16" / Int8ul,
-    Const(0, Int32ul),
-    Const(0, Int32ul),
+    "offset" / Int24ul,
+    "group" / Int8ul,
+    "unk2_2" / Int32ul,
     "unk2_3" / Int16ul,
-    "id" / Int16ul,
+    "id2" / Int16ul,
     "unk3" / Int32ul,
     "name" / PaddedString(16, "ascii")
 ))
@@ -254,11 +263,18 @@ AOPRatios = Struct(
 )
 
 DEV_PROPERTIES = {
+    "display-crossbar*": {
+        "*": {
+            "dfp-endpoints": ADTStringList,
+            "ufp-endpoints": ADTStringList,
+        }
+    },
     "pmgr": {
         "*": {
             "clusters": SafeGreedyRange(Int32ul),
             "devices": PMGRDevices,
             "ps-regs": PMGRPSRegs,
+            "ps-groups": PMGRPSRegs,
             "perf-regs": PMGRPerfRegs,
             "pwrgate-regs": PMGRPWRGateRegs,
             "power-domains": PMGRPowerDomains,
@@ -267,6 +283,13 @@ DEV_PROPERTIES = {
             "voltage-states*": SafeGreedyRange(Int32ul),
             "events": PMGREvents,
             "mtr-polynom-fuse-agx": MTRPolynomFuseAGX,
+        }
+    },
+    "pmgr-child": {
+        "*": {
+            "clusters": SafeGreedyRange(Int32ul),
+            "devices": PMGRDevices,
+            "ps-groups": PMGRPSRegs,
         }
     },
     "clpc": {
@@ -289,6 +312,13 @@ DEV_PROPERTIES = {
     },
     "*pmu*": {
         "*": {
+            "info-*name*": CString("ascii"),
+            "info-*": SafeGreedyRange(Hex(Int32ul)),
+        },
+    },
+    # PMU nodes on M3 Ultra/M4 Max / macOS 15.6.1 are named "spmi-*"
+    "spmi-*": {
+        "pmu,spmi": {
             "info-*name*": CString("ascii"),
             "info-*": SafeGreedyRange(Hex(Int32ul)),
         },
@@ -430,18 +460,19 @@ def parse_prop(node, path, node_name, name, v, is_template=False):
         t = SafeGreedyRange(Struct("bus_addr" / at, "parent_addr" / pat, "size" / st))
 
     elif name.startswith("dapf-instance-"):
-        try:
-            flags = node.dart_options
-        except AttributeError:
-            return None, v
-        if flags & 0x40:
-            if len(v) % DAPFT8110B.sizeof() == 0:
-                if len(v) % DAPFT8110C.sizeof() != 0:
-                    t = GreedyRange(DAPFT8110B)
-            else:
-                t = GreedyRange(DAPFT8110C)
-        else:
+        # Using the length to identify the DAPF T8110 variant is not safe as
+        # the least common multiple of 52 and 56 is 728. While this is just
+        # used for parsing and printing this length based selection is good
+        # enough. 0x40 from "dart-options" used previously does not identify
+        # the layout.
+        if len(v) % DAPFT8110.sizeof() == 0:
             t = GreedyRange(DAPFT8110)
+        elif len(v) % DAPFT8110B.sizeof() == 0:
+            t = GreedyRange(DAPFT8110B)
+        elif len(v) % DAPFT8110C.sizeof() == 0:
+            t = GreedyRange(DAPFT8110C)
+        else:
+            return None, v
 
     elif name == "interrupts":
         # parse "interrupts" as Array of Int32ul, wrong for nodes whose
@@ -695,6 +726,8 @@ class ADTNode:
 
     @property
     def _reg_struct(self):
+        if not hasattr(self._parent, "address_cells") or not hasattr(self._parent, "size_cells"):
+            return Int32ul
         ac, sc = self._parent.address_cells, self._parent.size_cells
         return Struct(
             "addr" / Hex(Int64ul) if ac == 2 else Array(ac, Hex(Int32ul)),
@@ -801,8 +834,43 @@ class ADTNode:
         self[name] = node
         return node
 
+    def pmgr_init(self):
+        self._pmgr_path = "/arm-io/pmgr-child" if self["/arm-io/pmgr"].compatible[0] in ["pmgr2,arch"] else "/arm-io/pmgr"
+        self._pmgr_u8id = (self[self._pmgr_path].devices[0].id1 != self[self._pmgr_path].devices[1].id1)
+        self._pmgr_use_group_and_offset = not "ps-regs" in self[self._pmgr_path]._properties
+
+    def pmgr_dev_get_id(self, dev):
+        if self._pmgr_u8id:
+            return dev.id1
+        else:
+            return dev.id2
+
+    def pmgr_dev_get_parents(self, dev):
+        if self._pmgr_u8id:
+            return dev.parents_un.u8id.parents 
+        else:
+            return dev.parents_un.u16id.parents 
+
+    def pmgr_dev_get_block(self, dev):
+        if self._pmgr_use_group_and_offset:
+            reg = self[self._pmgr_path].ps_groups[dev.group].reg
+        else:
+            reg = self[self._pmgr_path].ps_regs[dev.psreg].reg
+        return self[self._pmgr_path].get_reg(reg)
+
+    def pmgr_dev_get_offset(self, dev):
+        if self._pmgr_use_group_and_offset:
+            return dev.offset
+        else:
+            return self["/arm-io/pmgr"].ps_regs[dev.psreg].offset + dev.psidx * 8
+
+    def pmgr_dev_get_addr(self, dev):
+        return self.pmgr_dev_get_block(dev)[0] + self.pmgr_dev_get_offset(dev)
+
 def load_adt(data):
-    return ADTNode(ADTNodeStruct.parse(data))
+    node = ADTNode(ADTNodeStruct.parse(data))
+    node.pmgr_init()
+    return node
 
 if __name__ == "__main__":
     import sys, argparse, pathlib

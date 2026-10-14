@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 from ..fw.agx.initdata import *
 from ..fw.agx.channels import ChannelInfo
 from ..hw.uat import MemoryAttr
@@ -94,7 +94,7 @@ def build_iomappings(agx, chip_id):
             iomap(0x28e3d0000, 0x1000, 0x1000, 1),
             iomap(0x28e3c0000, 0x2000, 0x2000, 0),
         ]
-    elif chip_id in (0x6021,):
+    elif chip_id in (0x6020, 0x6021, 0x6022):
         mcc_cnt = {0x6022: 16, 0x6021: 8, 0x6020: 4}
         return [
             iomap(0x404d00000, 0x144000, 0x144000, 1), # Fender
@@ -168,6 +168,7 @@ CHIP_INFO = {
         unk_hws2_0 = 0,
         unk_hws2_4 = [0] * 8,
         unk_hws2_24 = 0,
+        tiling_control = 0xa041,
     ),
     0x6001: Container(
         chip_id = 0x6001,
@@ -220,6 +221,7 @@ CHIP_INFO = {
         unk_hws2_0 = 0,
         unk_hws2_4 = [0] * 8,
         unk_hws2_24 = 0,
+        tiling_control = 0xa540,
     ),
     0x6002: Container(
         chip_id = 0x6002,
@@ -275,6 +277,7 @@ CHIP_INFO = {
         unk_hws2_0 = 0,
         unk_hws2_4 = [0] * 8,
         unk_hws2_24 = 0,
+        tiling_control = 0xa540,
     ),
     0x8112: Container(
         chip_id = 0x8112,
@@ -331,6 +334,7 @@ CHIP_INFO = {
             10700, 10700, 10700, 10700,
         ],
         rc_unk_54 = 0xffff,
+        tiling_control = 0xa041,
     ),
     0x6021: Container(
         chip_id = 0x6021,
@@ -395,12 +399,79 @@ CHIP_INFO = {
             7500, 125, 125, 125, 125, 125, 125, 125
         ],
         rc_unk_54 = 4000,
+        tiling_control = 0x180340,
+    ),
+    0x6020: Container(
+        chip_id = 0x6020,
+        min_sram_volt = 790,
+        max_power = 95892,
+        max_freq_mhz = 1398,
+        unk_87c = 500,
+        unk_8cc = 11000,
+        unk_924 = [
+            [0.0, 8.2, 0.0, 6.9, 6.9] + [0] * 11,
+            [0.0, 0.0, 0.0, 6.9, 6.9] + [0] * 11,
+            [0.0, 8.2, 0.0, 6.9, 0.0] + [0] * 11,
+            [0.0, 0.0, 0.0, 6.9, 0.0] + [0] * 11,
+        ] + ([[0] * 16] * 4),
+        unk_e48 = [
+            [0.0, 9.0, 0.0, 8.0, 8.0] + [0] * 11,
+            [0.0, 0.0, 0.0, 8.0, 8.0] + [0] * 11,
+            [0.0, 9.0, 0.0, 8.0, 0.0] + [0] * 11,
+            [0.0, 0.0, 0.0, 8.0, 0.0] + [0] * 11,
+        ] + ([[0] * 16] * 4),
+        unk_e24 = 125,
+        gpu_fast_die0_sensor_mask64 = 0xc000d00,
+        gpu_fast_die1_sensor_mask64 = 0,
+        gpu_fast_die0_sensor_mask64_alt = 0x1d001d00,
+        gpu_fast_die1_sensor_mask64_alt = 0,
+        gpu_fast_die0_sensor_present = None,
+        shared1_tab = [0xffff] * 16,
+        shared1_a4 = 0,
+        shared2_tab = [0x800, 0x1555, -1, -1, -1, -1, -1, -1, 0xaaaaa, 0],
+        shared2_unk_508 = 0xc00007,
+        unk_3cf4 = [1564.0, 1416.0, 1428.0, 1614.0, 0, 0, 0, 0],
+        unk_3d14 = [42.0, 39.0, 39.0, 44.0, 0, 0, 0, 0],
+        unk_3d34_0 = [547.0, 0.0, 293.0, 0.0, 547.0, 0.0, 293.0, 0.0],
+        unk_118ec = [
+            0, 2, 2,
+            1, 1, 90, 75, 1, 1,
+            1, 2, 90, 75, 1, 1,
+            1, 2, 90, 75, 1, 1,
+            1, 1, 90, 75, 1, 1,
+        ],
+        hwdb_4e0 = 4,
+        hwdb_534 = 0,
+        num_cores = 20,
+        gpu_core = 16,
+        gpu_rev = 3,
+        hwdb_ab8 = None,
+        hwdb_abc = None,
+        hwdb_b30 = 0,
+        rel_max_powers = [0, 19, 26, 36, 48, 63, 79, 91, 100],
+        shared2_t1_coef = 11000,
+        shared2_t2 = [0xf07, 0x4c0, 0x680, 0x8c0, 0xa80, 0xc40, 0xd80, 0xec0, 0xf40],
+        shared2_t3_coefs = [None, 20.0, 27.0, 36.0, 43.0, 50.0, 55.0, 60.0, 62.0],
+        shared2_t3_scales = [9, 3209, 10400],
+        unk_hws2_0 = 700,
+        unk_hws2_4 = [1.0, 0.8, 0.2, 0.9, 0.1, 0.25, 0.7, 0.9],
+        unk_hws2_24 = 6,
+        sram_base = 0x404d60000,
+        sram_size = 0x20000,
+        shared3_unk = 8,
+        shared3_tab = [
+            125, 125, 125, 125, 125, 125, 125, 125,
+            7500, 125, 125, 125, 125, 125, 125, 125
+        ],
+        rc_unk_54 = 4000,
+        tiling_control = 0x180340,
     ),
 }
 def build_initdata(agx):
     sgx = agx.u.adt["/arm-io/sgx"]
     chosen = agx.u.adt["/chosen"]
     chip_info = CHIP_INFO[chosen.chip_id]
+    agx.chip_info = chip_info
 
     initdata = agx.kshared.new(InitData)
 
@@ -428,13 +499,14 @@ def build_initdata(agx):
     regionB.hwdata_a = agx.kobj.new(AGXHWDataA(sgx, chip_info), track=False)
 
     # size: 0x80, empty
-    regionB.unk_190 = agx.kobj.new_buf(0x80, "RegionB.unkptr_190").push()
+    regionB.fault_info = agx.kshared.new(AGXFaultInfo).push()
 
     # size: 0xc0, fw writes timestamps into this
     regionB.unk_198 = agx.kobj.new_buf(0xc0, "RegionB.unkptr_198").push()
 
     # size: 0xb80, io stuff
     hwdata = agx.kobj.new(AGXHWDataB(sgx, chip_info), track=False)
+    hwdata.timestamp_region_base = agx.ktimestamp.start
     hwdata.io_mappings = build_iomappings(agx, chosen.chip_id)
 
     if chip_info.sram_base:
@@ -472,10 +544,10 @@ def build_initdata(agx):
     if cs_pstates:
         hwdata.cs_max_pstate = cs_pstates.count - 1
         hwdata.cs_frequencies = [(ps.freq // 1000000)
-                                 for ps in cs_pstates.states] + [0] * (16 - cs_pstates.count)
+                                 for ps in cs_pstates.states[0]] + [0] * (16 - cs_pstates.count)
         hwdata.cs_voltages = [[(ps.volt // 1000), 0]
-                              for ps in cs_pstates.states] + [[0, 0]] * (16 - cs_pstates.count)
-        hwdata.cs_voltages_sram = [[max(i[0], cs_pstates.min_sram_volt // 1000) if i[0] else 0, 0] for i in hwdata.cs_voltages]
+                              for ps in cs_pstates.states[0]] + [[0, 0]] * (16 - cs_pstates.count)
+        hwdata.cs_voltages_sram = [[max(i[0], cs_pstates.min_sram_volt[0] // 1000) if i[0] else 0, 0] for i in hwdata.cs_voltages]
     else:
         hwdata.cs_max_pstate = 0
         hwdata.cs_frequencies = [0] * 16
@@ -486,10 +558,10 @@ def build_initdata(agx):
     if afr_pstates:
         hwdata.afr_max_pstate = afr_pstates.count - 1
         hwdata.afr_frequencies = [(ps.freq // 1000000)
-                                 for ps in afr_pstates.states] + [0] * (8 - afr_pstates.count)
+                                 for ps in afr_pstates.states[0]] + [0] * (8 - afr_pstates.count)
         hwdata.afr_voltages = [[(ps.volt // 1000), 0]
-                              for ps in afr_pstates.states] + [[0, 0]] * (8 - afr_pstates.count)
-        hwdata.afr_voltages_sram = [[max(i[0], afr_pstates.min_sram_volt // 1000) if i[0] else 0, 0] for i in hwdata.afr_voltages]
+                              for ps in afr_pstates.states[0]] + [[0, 0]] * (8 - afr_pstates.count)
+        hwdata.afr_voltages_sram = [[max(i[0], afr_pstates.min_sram_volt[0] // 1000) if i[0] else 0, 0] for i in hwdata.afr_voltages]
     else:
         hwdata.afr_max_pstate = 0
         hwdata.afr_frequencies = [0] * 8

@@ -1,7 +1,8 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 from construct import *
 
 from ...utils import *
+from ...constructutils import Bool
 from ..asc import StandardASC
 from ..afk.epic import *
 from .dcpav import *

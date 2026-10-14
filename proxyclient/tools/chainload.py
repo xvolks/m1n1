@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -17,9 +17,11 @@ parser.add_argument('boot_args', default=[], nargs="*")
 args = parser.parse_args()
 
 from m1n1.setup import *
-from m1n1.tgtypes import BootArgs
+from m1n1.tgtypes import BootArgs_r1, BootArgs_r2, BootArgs_r3
 from m1n1.macho import MachO
 from m1n1 import asm
+from m1n1.bootmem import BOOT_BLOBS, find_boot_blobs, copy_boot_blobs
+from construct import Array, Int64ul
 
 new_base = u.base
 
@@ -38,19 +40,11 @@ else:
 if args.quiet:
     p.iodev_set_usage(IODEV.FB, 0)
 
-sepfw_start, sepfw_length = 0, 0
-preoslog_start, preoslog_size = 0, 0
-
-if not args.no_sepfw:
-    sepfw_start, sepfw_length = u.adt["chosen"]["memory-map"].SEPFW
-    if hasattr(u.adt["chosen"]["memory-map"], "preoslog"):
-        preoslog_start, preoslog_size = u.adt["chosen"]["memory-map"].preoslog
-
-image_size = align(len(image))
-sepfw_off = image_size
-image_size += align(sepfw_length)
-preoslog_off = image_size
-image_size += align(preoslog_size)
+if args.no_sepfw:
+    blob_names = tuple(name for name in BOOT_BLOBS if name != "SEPFW")
+else:
+    blob_names = BOOT_BLOBS
+blobs, image_size = find_boot_blobs(u.adt["chosen"]["memory-map"]._properties, blob_names, align(len(image)))
 bootargs_off = image_size
 bootargs_size = 0x4000
 image_size += bootargs_size
@@ -58,39 +52,49 @@ image_size += bootargs_size
 print(f"Total region size: 0x{image_size:x} bytes")
 image_addr = u.malloc(image_size)
 
+copy_boot_blobs(p, [(name, src, size, image_addr + off) for name, src, size, off in blobs])
+
 print(f"Loading kernel image (0x{len(image):x} bytes)...")
 u.compressed_writemem(image_addr, image, True)
 p.dc_cvau(image_addr, len(image))
 
-if not args.no_sepfw:
-    print(f"Copying SEPFW (0x{sepfw_length:x} bytes)...")
-    p.memcpy8(image_addr + sepfw_off, sepfw_start, sepfw_length)
-    print(f"Adjusting addresses in ADT...")
-    u.adt["chosen"]["memory-map"].SEPFW = (new_base + sepfw_off, sepfw_length)
-    u.adt["chosen"]["memory-map"].BootArgs = (new_base + bootargs_off, bootargs_size)
-    if hasattr(u.adt["chosen"]["memory-map"], "preoslog"):
-        p.memcpy8(image_addr + preoslog_off, preoslog_start, preoslog_size)
-        u.adt["chosen"]["memory-map"].preoslog = (new_base + preoslog_off, preoslog_size)
+print("Adjusting addresses in ADT...")
+for name, src, size, off in blobs:
+    mm = u.adt["chosen"]["memory-map"]
+    mm._properties[name] = (new_base + off, size)
+    mm._types[name] = (Array(2, Int64ul), False)
+u.adt["chosen"]["memory-map"].BootArgs = (new_base + bootargs_off, bootargs_size)
 
-for name in ("mtp", "aop"):
-    if name in u.adt["/arm-io"]:
-        iop = u.adt[f"/arm-io/{name}"]
-        nub = u.adt[f"/arm-io/{name}/iop-{name}-nub"]
-        if iop.segment_names.endswith(";__OS_LOG"):
-            iop.segment_names = iop.segment_names[:-9]
-            nub.segment_names = nub.segment_names[:-9]
-            iop.segment_ranges = iop.segment_ranges[:-32]
-            nub.segment_ranges = nub.segment_ranges[:-32]
+if args.xnu:
+    def remove_oslog(node):
+        names = node.segment_names.split(";")
+        try:
+            idx = names.index("__OS_LOG")
+        except ValueError:
+            return
+        print(f"Removing __OS_LOG from {node.name}")
+        names = names[:idx] + names[idx + 1:]
+        node.segment_names = ";".join(names)
+        node.segment_ranges = node.segment_ranges[:idx * 32] + node.segment_ranges[32 + idx * 32: ]
 
-print("Setting secondary CPU RVBARs...")
+    for node in u.adt["/arm-io"]:
+        if hasattr(node, "segment_names"):
+            remove_oslog(node)
+
+        for nub in node:
+            if hasattr(nub, "segment_names"):
+                remove_oslog(nub)
 
 rvbar = entry & ~0xfff
-for cpu in u.adt["cpus"]:
-    if cpu.state == "running":
-        continue
-    addr, size = cpu.cpu_impl_reg
-    print(f"  {cpu.name}: [0x{addr:x}] = 0x{rvbar:x}")
-    p.write64(addr, rvbar)
+if rvbar != u.base:
+    print("Setting secondary CPU RVBARs...")
+
+    for cpu in u.adt["cpus"]:
+        if cpu.state == "running":
+            continue
+        addr, size = cpu.cpu_impl_reg
+        print(f"  {cpu.name}: [0x{addr:x}] = 0x{rvbar:x}")
+        p.write64(addr, rvbar)
 
 u.push_adt()
 
@@ -113,7 +117,12 @@ if args.xnu:
     tba.virt_base = 0xfffffe0010000000 + (tba.phys_base & (32 * 1024 * 1024 - 1))
     tba.devtree = u.ba.devtree - u.ba.virt_base + tba.virt_base
 
-iface.writemem(image_addr + bootargs_off, BootArgs.build(tba))
+if tba.revision <= 1:
+    iface.writemem(image_addr + bootargs_off, BootArgs_r1.build(tba))
+elif tba.revision == 2:
+    iface.writemem(image_addr + bootargs_off, BootArgs_r2.build(tba))
+elif tba.revision == 3:
+    iface.writemem(image_addr + bootargs_off, BootArgs_r3.build(tba))
 
 print(f"Copying stub...")
 

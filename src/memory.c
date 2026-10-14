@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "memory.h"
 #include "adt.h"
@@ -19,7 +19,7 @@
 #define CACHE_RANGE_OP(func, op)                                                                   \
     void func(void *addr, size_t length)                                                           \
     {                                                                                              \
-        if (func == dc_civac_range && cpufeat_workaround_cyclone_cache) {                          \
+        if (func == dc_civac_range && cpu_features->workaround_cyclone_cache) {                    \
             reg_clr(SYS_IMP_APL_HID4, HID4_DISABLE_DC_MVA);                                        \
             sysop("isb");                                                                          \
         }                                                                                          \
@@ -29,7 +29,7 @@
             cacheop(op, p);                                                                        \
             p += CACHE_LINE_SIZE;                                                                  \
         }                                                                                          \
-        if (func == dc_civac_range && cpufeat_workaround_cyclone_cache) {                          \
+        if (func == dc_civac_range && cpu_features->workaround_cyclone_cache) {                    \
             reg_set(SYS_IMP_APL_HID4, HID4_DISABLE_DC_MVA);                                        \
             sysop("isb");                                                                          \
         }                                                                                          \
@@ -60,64 +60,41 @@ static inline void write_sctlr(u64 val)
 
 #define VADDR_L3_INDEX_BITS (is_16k() ? 11 : 9)
 #define VADDR_L2_INDEX_BITS (is_16k() ? 11 : 9)
-// We treat two concatenated L1 page tables as one on 16K
-// And all the L1 page tables together on 4K...
-#define VADDR_L1_INDEX_BITS        (is_16k() ? 12 : 18)
-#define VADDR_L1_INDEX_BITS_ACTUAL (is_16k() ? 11 : 9)
-#define VADDR_L0_INDEX_BITS        (is_16k() ? 1 : 9)
+#define VADDR_L1_INDEX_BITS (is_16k() ? 11 : 9)
+#define VADDR_L0_INDEX_BITS (is_16k() ? 1 : 9)
 
 #define VADDR_L3_OFFSET_BITS (is_16k() ? 14 : 12)
 #define VADDR_L2_OFFSET_BITS (is_16k() ? 25 : 21)
 #define VADDR_L1_OFFSET_BITS (is_16k() ? 36 : 30)
+#define VADDR_L0_OFFSET_BITS (is_16k() ? 47 : 39)
 
 #define VADDR_L1_ALIGN_MASK GENMASK(VADDR_L1_OFFSET_BITS - 1, VADDR_L2_OFFSET_BITS)
 #define VADDR_L2_ALIGN_MASK GENMASK(VADDR_L2_OFFSET_BITS - 1, VADDR_L3_OFFSET_BITS)
 #define PTE_TARGET_MASK     GENMASK(49, VADDR_L3_OFFSET_BITS)
 
-#define ENTRIES_PER_L0_TABLE        BIT(VADDR_L0_INDEX_BITS)
-#define ENTRIES_PER_L1_TABLE        BIT(VADDR_L1_INDEX_BITS)
-#define ENTRIES_PER_L1_TABLE_ACTUAL BIT(VADDR_L1_INDEX_BITS_ACTUAL)
-#define ENTRIES_PER_L2_TABLE        BIT(VADDR_L2_INDEX_BITS)
-#define ENTRIES_PER_L3_TABLE        BIT(VADDR_L3_INDEX_BITS)
+#define ENTRIES_PER_L0_TABLE BIT(VADDR_L0_INDEX_BITS)
+#define ENTRIES_PER_L1_TABLE BIT(VADDR_L1_INDEX_BITS)
+#define ENTRIES_PER_L2_TABLE BIT(VADDR_L2_INDEX_BITS)
+#define ENTRIES_PER_L3_TABLE BIT(VADDR_L3_INDEX_BITS)
 
 #define IS_PTE(pte) ((pte) && pte & PTE_VALID)
 
+#define L0_IS_TABLE(pte) (IS_PTE(pte) && FIELD_GET(PTE_TYPE, pte) == PTE_TABLE)
 #define L1_IS_TABLE(pte) (IS_PTE(pte) && FIELD_GET(PTE_TYPE, pte) == PTE_TABLE)
-#define L1_IS_BLOCK(pte) (IS_PTE(pte) && FIELD_GET(PTE_TYPE, pte) == PTE_BLOCK)
 #define L2_IS_TABLE(pte) (IS_PTE(pte) && FIELD_GET(PTE_TYPE, pte) == PTE_TABLE)
-#define L2_IS_BLOCK(pte) (IS_PTE(pte) && FIELD_GET(PTE_TYPE, pte) == PTE_BLOCK)
-#define L3_IS_BLOCK(pte) (IS_PTE(pte) && FIELD_GET(PTE_TYPE, pte) == PTE_PAGE)
 
 /*
- * We use 16KB pages which results in the following virtual address space:
+ * m1n1 supports 4K and 16K paging. We prefer 16K paging whenever possible.
+ *
+ * On A7, A8, A8X, 4K paging is used, resulting in the following virtual address space:
+ *
+ * [L0 index]  [L1 index]  [L2 index]  [L3 index] [page offset]
+ *   9 bits      9 bits      9 bits     9 bits      11 bits
+ *
+ * On all other platforms including all Apple Silicon Macs, 16K paging is used:
  *
  * [L0 index]  [L1 index]  [L2 index]  [L3 index] [page offset]
  *   1 bit       11 bits     11 bits     11 bits    14 bits
- *
- * To simplify things we treat the L1 page table as a concatenated table,
- * which results in the following layout:
- *
- * [L1 index]  [L2 index]  [L3 index] [page offset]
- *   12 bits     11 bits     11 bits    14 bits
- *
- * We initialize one double-size L1 table which covers the entire virtual memory space,
- * point to the two halves in the single L0 table and then create L2/L3 tables on demand.
- */
-
-/*
- * On 4K devices, the following virtual address space results:
- *
- * [L0 index]  [L1 index]  [L2 index]  [L3 index] [page offset]
- *   9 bit       9 bits      9 bits     9 bits      11 bits
- *
- * To simplify things we treat the L1 page table as a concatenated table,
- * which results in the following layout:
- *
- * [L1 index]  [L2 index]  [L3 index] [page offset]
- *   18 bits     9 bits      9 bits      11 bits
- *
- * We initialize one giant L1 table which covers the entire virtual memory space,
- * point to the parts in a single L0 table and then create L2/L3 tables on demand.
  */
 
 /*
@@ -197,23 +174,69 @@ enum SPRR_val_t {
 #define MAIR_ATTR_DEVICE_GRE     0x0cUL
 
 static u64 *mmu_pt_L0;
-static u64 *mmu_pt_L1;
+
+static u64 *mmu_pt_get_l1(u64 from)
+{
+    u64 l0idx = from >> VADDR_L0_OFFSET_BITS;
+    assert(l0idx < ENTRIES_PER_L0_TABLE);
+    u64 l0d = mmu_pt_L0[l0idx];
+
+    if (L0_IS_TABLE(l0d))
+        return (u64 *)(l0d & PTE_TARGET_MASK);
+
+    u64 *l1 = (u64 *)memalign(PAGE_SIZE, ENTRIES_PER_L1_TABLE * sizeof(u64));
+    assert(!IS_PTE(l0d));
+    memset64(l1, 0, ENTRIES_PER_L1_TABLE * sizeof(u64));
+
+    l0d = ((u64)l1) | FIELD_PREP(PTE_TYPE, PTE_TABLE) | PTE_VALID;
+    mmu_pt_L0[l0idx] = l0d;
+    return l1;
+}
+
+static void mmu_pt_map_l1(u64 from, u64 to, u64 size)
+{
+    assert((from & MASK(VADDR_L1_OFFSET_BITS)) == 0);
+    assert((to & PTE_TARGET_MASK & MASK(VADDR_L1_OFFSET_BITS)) == 0);
+    assert((size & MASK(VADDR_L1_OFFSET_BITS)) == 0);
+
+    to |= FIELD_PREP(PTE_TYPE, PTE_BLOCK);
+
+    for (; size; size -= BIT(VADDR_L1_OFFSET_BITS)) {
+        u64 idx = (from >> VADDR_L1_OFFSET_BITS) & MASK(VADDR_L1_INDEX_BITS);
+        u64 *l1 = mmu_pt_get_l1(from);
+
+        if (L1_IS_TABLE(l1[idx]))
+            free((void *)(l1[idx] & PTE_TARGET_MASK));
+
+        l1[idx] = to;
+        from += BIT(VADDR_L1_OFFSET_BITS);
+        to += BIT(VADDR_L1_OFFSET_BITS);
+    }
+}
 
 static u64 *mmu_pt_get_l2(u64 from)
 {
-    u64 l1idx = from >> VADDR_L1_OFFSET_BITS;
+    u64 *l1 = mmu_pt_get_l1(from);
+    u64 l1idx = (from >> VADDR_L1_OFFSET_BITS) & MASK(VADDR_L1_INDEX_BITS);
     assert(l1idx < ENTRIES_PER_L1_TABLE);
-    u64 l1d = mmu_pt_L1[l1idx];
+    u64 l1d = l1[l1idx];
 
     if (L1_IS_TABLE(l1d))
         return (u64 *)(l1d & PTE_TARGET_MASK);
 
     u64 *l2 = (u64 *)memalign(PAGE_SIZE, ENTRIES_PER_L2_TABLE * sizeof(u64));
-    assert(!IS_PTE(l1d));
-    memset64(l2, 0, ENTRIES_PER_L2_TABLE * sizeof(u64));
+    if (IS_PTE(l1d)) {
+        u64 l2d = l1d;
+        l2d &= ~PTE_TYPE;
+        l2d |= FIELD_PREP(PTE_TYPE, PTE_BLOCK);
+        for (u64 idx = 0; idx < ENTRIES_PER_L2_TABLE; idx++, l2d += BIT(VADDR_L2_OFFSET_BITS))
+            l2[idx] = l2d;
+    } else {
+        memset64(l2, 0, ENTRIES_PER_L2_TABLE * sizeof(u64));
+    }
 
     l1d = ((u64)l2) | FIELD_PREP(PTE_TYPE, PTE_TABLE) | PTE_VALID;
-    mmu_pt_L1[l1idx] = l1d;
+    l1[l1idx] = l1d;
     return l2;
 }
 
@@ -288,19 +311,41 @@ int mmu_map(u64 from, u64 to, u64 size)
     if (from & MASK(VADDR_L3_OFFSET_BITS) || size & MASK(VADDR_L3_OFFSET_BITS))
         return -1;
 
-    // L3 mappings to boundary
-    u64 boundary = ALIGN_UP(from, MASK(VADDR_L2_OFFSET_BITS));
+    // Map L3 until L2-aligned or reached end of mapping
+    u64 boundary_l2 = ALIGN_UP(from, MASK(VADDR_L2_OFFSET_BITS));
     // CPU CTRR doesn't like L2 mappings crossing CTRR boundaries!
     // Map everything below the m1n1 base as L3
-    if (boundary >= ram_base && boundary < (u64)_base)
-        boundary = ALIGN_UP((u64)_base, MASK(VADDR_L2_OFFSET_BITS));
+    if (boundary_l2 >= ram_base && boundary_l2 < (u64)_base)
+        boundary_l2 = ALIGN_UP((u64)_base, MASK(VADDR_L2_OFFSET_BITS));
 
-    chunk = min(size, boundary - from);
+    chunk = min(size, boundary_l2 - from);
     if (chunk) {
         mmu_pt_map_l3(from, to, chunk);
         from += chunk;
         to += chunk;
         size -= chunk;
+    }
+
+    // 16K does not support L1 blocks without FEAT_LPA2
+    if (!is_16k()) {
+        // Map L2 until L1-aligned or reached end of mapping
+        u64 boundary_l1 = ALIGN_UP(from, MASK(VADDR_L1_OFFSET_BITS));
+        chunk = min(ALIGN_DOWN(size, MASK(VADDR_L1_OFFSET_BITS)), boundary_l1 - from);
+        if (chunk) {
+            mmu_pt_map_l2(from, to, chunk);
+            from += chunk;
+            to += chunk;
+            size -= chunk;
+        }
+
+        // L1 mappings
+        chunk = ALIGN_DOWN(size, MASK(VADDR_L1_OFFSET_BITS));
+        if (chunk && (to & VADDR_L1_ALIGN_MASK) == 0) {
+            mmu_pt_map_l1(from, to, chunk);
+            from += chunk;
+            to += chunk;
+            size -= chunk;
+        }
     }
 
     // L2 mappings
@@ -320,25 +365,10 @@ int mmu_map(u64 from, u64 to, u64 size)
     return 0;
 }
 
-static u64 mmu_make_table_pte(u64 *addr)
-{
-    u64 pte = FIELD_PREP(PTE_TYPE, PTE_TABLE) | PTE_VALID;
-    pte |= (uintptr_t)addr;
-    pte |= PTE_ACCESS;
-    return pte;
-}
-
 static void mmu_init_pagetables(void)
 {
     mmu_pt_L0 = memalign(PAGE_SIZE, sizeof(u64) * ENTRIES_PER_L0_TABLE);
-    mmu_pt_L1 = memalign(PAGE_SIZE, sizeof(u64) * ENTRIES_PER_L1_TABLE);
-
     memset64(mmu_pt_L0, 0, sizeof(u64) * ENTRIES_PER_L0_TABLE);
-    memset64(mmu_pt_L1, 0, sizeof(u64) * ENTRIES_PER_L1_TABLE);
-
-    for (size_t i = 0; i < ENTRIES_PER_L0_TABLE; i++) {
-        mmu_pt_L0[i] = mmu_make_table_pte(&mmu_pt_L1[i * ENTRIES_PER_L1_TABLE_ACTUAL]);
-    }
     return;
 }
 
@@ -380,8 +410,11 @@ static void mmu_map_mmio(void)
         u64 bus = ranges[2] | ((u64)ranges[3] << 32);
         u64 size = ranges[4] | ((u64)ranges[5] << 32);
 
-        mmu_add_mapping(bus, bus, size, MAIR_IDX_DEVICE_nGnRnE, PERM_RW_EL0);
+        /* T2 is really stupid */
+        if (chip_id == T8012)
+            size = ALIGN_UP(size, PAGE_SIZE);
 
+        mmu_add_mapping(bus, bus, size, MAIR_IDX_DEVICE_nGnRnE, PERM_RW_EL0);
         ranges += 6;
     }
 }
@@ -424,6 +457,23 @@ void mmu_map_framebuffer(u64 addr, size_t size)
     printf("MMU: Adding Normal-NC mapping at 0x%lx (0x%zx) for framebuffer\n", addr, size);
     dc_civac_range((void *)addr, size);
     mmu_add_mapping(addr, addr, size, MAIR_IDX_NORMAL_NC, PERM_RW_EL0);
+}
+
+static void mmu_remap_smp_shared(void)
+{
+    extern u8 _smp_shared_start[], _smp_shared_end[];
+    u64 base = (u64)_smp_shared_start;
+    u64 size = _smp_shared_end - _smp_shared_start;
+
+    /*
+     * Make sure there is absolutely no mapping anywhere that tries to access this area
+     * through caches to prevent mismatched views of memory between cores that run with
+     * MMU off vs. on.
+     */
+    mmu_add_mapping(base, base, size, MAIR_IDX_DEVICE_nGnRnE, PERM_RW);
+    mmu_add_mapping(base | REGION_RWX_EL0, base, size, MAIR_IDX_DEVICE_nGnRnE, PERM_RW_EL0);
+    mmu_add_mapping(base | REGION_RW_EL0, base, size, MAIR_IDX_DEVICE_nGnRnE, PERM_RW_EL0);
+    mmu_add_mapping(base | REGION_RX_EL1, base, size, MAIR_IDX_DEVICE_nGnRnE, PERM_RW_EL0);
 }
 
 static void mmu_add_default_mappings(void)
@@ -489,6 +539,7 @@ static void mmu_add_default_mappings(void)
      * Handle pmap-ranges
      */
     mmu_remap_ranges();
+    mmu_remap_smp_shared();
 }
 
 static void mmu_configure(void)
@@ -535,7 +586,7 @@ void mmu_init(void)
     mmu_init_pagetables();
     mmu_add_default_mappings();
     mmu_configure();
-    if (cpufeat_mmu_sprr)
+    if (cpu_features->mmu_sprr)
         mmu_init_sprr();
 
     // Enable EL0 memory access by EL1
@@ -555,7 +606,7 @@ void mmu_init(void)
 static void mmu_secondary_setup(void)
 {
     mmu_configure();
-    if (cpufeat_mmu_sprr)
+    if (cpu_features->mmu_sprr)
         mmu_init_sprr();
 
     // Enable EL0 memory access by EL1
@@ -566,6 +617,31 @@ static void mmu_secondary_setup(void)
     u64 sctlr = SCTLR_LSMAOE | SCTLR_nTLSMD | SCTLR_TSCXT | SCTLR_ITD;
     // Configure translation
     sctlr |= SCTLR_I | SCTLR_C | SCTLR_M | SCTLR_SPAN;
+
+    /*
+     * m1n1 issues #463 and #480 show that we sometimes crash with an invalid LR restored from
+     * a previous stackframe when returning from this function. The invalid value comes from this
+     * same core which points to some caching or load/store ordering issue.
+     * Two possible causes:
+     * 1) Until this point, this core's stack was only ever accessed as Device-nGnRnE since
+     *    both MMU and caches were off. These are treated as outer sharable.
+     *    Once we switch SCTRL.{C,M} on, any subsequent load is now Normal-NB and goes through
+     *    the caches. Without any barries inbetween, these loads are specifically not ordered
+     *    against the previous stores which may not have completed all the way to DRAM and result
+     *    in stale loads. Adding a dsb sy ensures all these stores are completed before we turn
+     *    on the MMU.
+     * 2) Additionally, this core's stack is already mapped as Normal memory for at least the
+     *    primary core and while it's not accessed directly there might still be speculative loads
+     *    at just the wrong time resulting in a stale cache line with the previous stack frame.
+     *    Invalidate the cache for our stack before enabling the MMU to prevent this.
+     * It's not clear which of these two actually caused the issue because dsb sy already seems to
+     * prevent it and that barrier is required after the cache invalidation anyway. Let's just do
+     * both to be safe since this code only runs once after a core is started for the first time.
+     */
+    sysop("dsb sy"); // ensure all stores to RAM with Device-nGnRnE semantics are completed
+    dc_ivac_range(secondary_stacks[smp_id()], SECONDARY_STACK_SIZE);
+    sysop("dsb sy"); // ensure cache invalidation is completed
+
     write_sctlr(sctlr);
 }
 

@@ -1,10 +1,11 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "fb.h"
 #include "assert.h"
 #include "iodev.h"
 #include "malloc.h"
 #include "memory.h"
+#include "payload.h"
 #include "string.h"
 #include "types.h"
 #include "utils.h"
@@ -44,11 +45,18 @@ static struct {
     bool active;
 } console;
 
+extern u8 _binary_build_bootlogo_48_bin_start[];
 extern u8 _binary_build_bootlogo_128_bin_start[];
 extern u8 _binary_build_bootlogo_256_bin_start[];
 
 extern u8 _binary_build_font_bin_start[];
 extern u8 _binary_build_font_retina_bin_start[];
+
+const struct image logo_48 = {
+    .ptr = (void *)_binary_build_bootlogo_48_bin_start,
+    .width = 48,
+    .height = 48,
+};
 
 const struct image logo_128 = {
     .ptr = (void *)_binary_build_bootlogo_128_bin_start,
@@ -61,6 +69,8 @@ const struct image logo_256 = {
     .width = 256,
     .height = 256,
 };
+
+struct image custom_logo = {};
 
 const struct image *logo;
 struct image orig_logo;
@@ -350,15 +360,13 @@ ssize_t fb_console_write(const char *bfr, size_t len)
     return wrote;
 }
 
-static bool fb_console_iodev_can_write(void *opaque)
+static bool fb_console_iodev_can_write(__always_unused void *opaque)
 {
-    UNUSED(opaque);
     return console.initialized && console.active;
 }
 
-static ssize_t fb_console_iodev_write(void *opaque, const void *buf, size_t len)
+static ssize_t fb_console_iodev_write(__always_unused void *opaque, const void *buf, size_t len)
 {
-    UNUSED(opaque);
     return fb_console_write(buf, len);
 }
 
@@ -395,6 +403,7 @@ void fb_clear_direct(void)
 
 void fb_init(bool clear)
 {
+    void *custom_128, *custom_256;
     fb.hwptr = (void *)cur_boot_args.video.base;
     fb.stride = cur_boot_args.video.stride / 4;
     fb.width = cur_boot_args.video.width;
@@ -409,7 +418,13 @@ void fb_init(bool clear)
     fb.ptr = malloc(fb.size);
     memcpy(fb.ptr, fb.hwptr, fb.size);
 
-    if (cur_boot_args.video.depth & FB_DEPTH_FLAG_RETINA) {
+    // This is the touchbar, make everything tiny
+    if (chip_id == T8012) {
+        logo = &logo_48;
+        console.font.ptr = _binary_build_font_bin_start;
+        console.font.width = 8;
+        console.font.height = 16;
+    } else if (cur_boot_args.video.depth & FB_DEPTH_FLAG_RETINA) {
         logo = &logo_256;
         console.font.ptr = _binary_build_font_retina_bin_start;
         console.font.width = 16;
@@ -419,20 +434,6 @@ void fb_init(bool clear)
         console.font.ptr = _binary_build_font_bin_start;
         console.font.width = 8;
         console.font.height = 16;
-    }
-
-    if (!orig_logo.ptr) {
-        orig_logo = *logo;
-        orig_logo.ptr = malloc(orig_logo.width * orig_logo.height * 4);
-        fb_unblit_image((fb.width - orig_logo.width) / 2, (fb.height - orig_logo.height) / 2,
-                        &orig_logo);
-    }
-
-    if (clear) {
-        memset32(fb.ptr, 0, fb.size);
-    } else {
-        // Workaround for m1n1 stage 1 framebuffer UAF bug
-        memset32(fb.ptr, 0, min(256, fb.size));
     }
 
     console.margin.rows = 2;
@@ -453,6 +454,33 @@ void fb_init(bool clear)
 
     console.initialized = true;
     console.active = false;
+
+    if (!orig_logo.ptr) {
+        orig_logo = *logo;
+        orig_logo.ptr = malloc(orig_logo.width * orig_logo.height * 4);
+        fb_unblit_image((fb.width - orig_logo.width) / 2, (fb.height - orig_logo.height) / 2,
+                        &orig_logo);
+    }
+
+    if (payload_logo(&custom_128, &custom_256)) {
+        custom_logo = *logo;
+        if (custom_logo.width == 256) {
+            custom_logo.ptr = custom_256;
+            logo = &custom_logo;
+        } else if (custom_logo.width == 128) {
+            custom_logo.ptr = custom_128;
+            logo = &custom_logo;
+        } else {
+            printf("fb: unexpected logo dimensions %ux%u\n", custom_logo.width, custom_logo.height);
+        }
+    }
+
+    if (clear) {
+        memset32(fb.ptr, 0, fb.size);
+    } else {
+        // Workaround for m1n1 stage 1 framebuffer UAF bug
+        memset32(fb.ptr, 0, min(256, fb.size));
+    }
 
     fb_clear_console();
 

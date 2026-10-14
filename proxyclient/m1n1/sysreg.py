@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: MIT
-import json, os, re
+# SPDX-License-Identifier: GPL-2.0-or-later
+import json, re
+import importlib.resources as resources
 from enum import Enum, IntEnum, IntFlag
 from .utils import Register, Register64, Register32
 
@@ -11,7 +12,8 @@ def _load_registers():
     sysreg_fwd = {}
     sysop_fwd = {}
     for fname in ["arm_regs.json", "apple_regs.json"]:
-        data = json.load(open(os.path.join(os.path.dirname(__file__), "..", "..", "tools", fname)))
+        data = json.loads(resources.read_text(__package__, fname, encoding="utf-8"))
+
         for reg in data:
             if "accessors" in reg:
                 for acc in reg["accessors"]:
@@ -58,6 +60,12 @@ def sysreg_parse(s):
             raise Exception(f"Unknown sysreg name {s}")
     return enc
 
+def sysreg_encode(reg, read, rt=0):
+    op0, op1, CRn, CRm, op2 = sysreg_parse(reg)
+    return ((op0 << 19) | (op1 << 16) | (CRn << 12) |
+            (CRm << 8) | (op2 << 5) | (read << 21) | rt | 0xd5000000)
+
+
 def DBGBCRn_EL1(n):
     return (2,0,0,n,5)
 
@@ -84,13 +92,16 @@ class ESR_EC(IntEnum):
     MSR            = 0b011000
     SVE            = 0b011001
     PAUTH_FAIL     = 0b011100
+    SME            = 0b011101
     IABORT_LOWER   = 0b100000
     IABORT         = 0b100001
     PC_ALIGN       = 0b100010
     DABORT_LOWER   = 0b100100
     DABORT         = 0b100101
     SP_ALIGN       = 0b100110
+    MOPS           = 0b100111
     FP_EXC         = 0b101100
+    GCS            = 0b101101
     SERROR         = 0b101111
     BKPT_LOWER     = 0b110000
     BKPT           = 0b110001

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "exception.h"
 #include "memory.h"
@@ -99,7 +99,7 @@ _exc_return:
 .globl el0_call
 .type el0_call, @function
 el0_call:
-    str x30, [sp, #-16]!
+    stp x29, x30, [sp, #-16]!
 
     mrs x5, CurrentEL
     cmp x5, #4
@@ -112,9 +112,14 @@ el0_call:
     isb
 
     1:
-    mrs x5, daif
-    msr daifclr, 3
+    // Capture PSTATE
+    mov x6, x0
+    brk 1
+    mov x29, x0
+    bic x5, x0, #0xf
+    msr daifset, #0xf
     msr spsr_el1, x5
+    mov x0, x6
 
     ldr x5, =_el0_thunk
     msr elr_el1, x5
@@ -146,16 +151,17 @@ _el0_thunk:
 .globl el0_ret
 .type el0_ret, @function
 el0_ret:
-    ldr x30, [sp], #16
+    msr daif, x29
+    ldp x29, x30, [sp], #16
     ret
 
 .globl el1_call
 .type el1_call, @function
 el1_call:
-    str x30, [sp, #-16]!
+    stp x29, x30, [sp, #-16]!
 
-    mrs x5, CurrentEL
-    cmp x5, #4
+    mrs x29, CurrentEL
+    cmp x29, #4
     beq _el1_thunk
 
     // Enable EL1, but only if not already done.
@@ -168,11 +174,19 @@ el1_call:
     msr hcr_el2, x6
     isb
 
-    1: mrs x5, daif
-    msr daifclr, 3
+    1:
+    // Capture PSTATE into x0
+    mov x29, x0
+    brk 1
+    bic x5, x0, #0xf
     mov x6, #5
     orr x5, x5, x6 // EL1h
-    msr spsr_el2, x5
+    msr daifset, #0xf
+    msr spsr_el1, x5
+    mov x0, x29
+
+    // We're not in EL1.
+    mov x29, #0
 
     ldr x5, =_el1_thunk
     msr elr_el2, x5
@@ -192,8 +206,7 @@ _el1_thunk:
 
     blr x5
 
-    mrs x5, CurrentEL
-    cmp x5, #4
+    cmp x29, #4
     beq el1_ret
 
     hvc 0
@@ -202,7 +215,8 @@ _el1_thunk:
 .globl el1_ret
 .type el1_ret, @function
 el1_ret:
-    ldr x30, [sp], #16
+    msr daif, x29
+    ldp x29, x30, [sp], #16
     ret
 
 .align 11

@@ -3,12 +3,25 @@ RUSTARCH ?= aarch64-unknown-none-softfloat
 ifeq ($(shell uname),Darwin)
 USE_CLANG ?= 1
 $(info INFO: Building on Darwin)
-ifeq ($(shell uname -p),arm)
-TOOLCHAIN ?= /opt/homebrew/opt/llvm/bin/
+
+ifeq ($(shell command -v llvm-config 2>/dev/null),)
+BREW ?= $(shell command -v brew)
+LLVMCONFIG ?= $(shell $(BREW) --prefix llvm)/bin/llvm-config
 else
-TOOLCHAIN ?= /usr/local/opt/llvm/bin/
+LLVMCONFIG ?= $(shell command -v llvm-config)
 endif
+TOOLCHAIN ?= $(shell $(LLVMCONFIG) --bindir)/
 $(info INFO: Toolchain path: $(TOOLCHAIN))
+
+ifeq ($(shell ls $(TOOLCHAIN)ld.lld 2>/dev/null),)
+BREW ?= $(shell command -v brew)
+LLDDIR ?= $(shell $(BREW) --prefix lld)/bin/
+else
+LLDDIR ?= $(TOOLCHAIN)
+endif
+ifneq ($(TOOLCHAIN),$(LLDDIR))
+$(info INFO: LLD path: $(LLDDIR))
+endif
 endif
 
 ifeq ($(shell uname -m),aarch64)
@@ -20,7 +33,7 @@ endif
 ifeq ($(USE_CLANG),1)
 CC := $(TOOLCHAIN)clang --target=$(ARCH)
 AS := $(TOOLCHAIN)clang --target=$(ARCH)
-LD := $(TOOLCHAIN)ld.lld
+LD := $(LLDDIR)ld.lld
 OBJCOPY := $(TOOLCHAIN)llvm-objcopy
 CLANG_FORMAT ?= $(TOOLCHAIN)clang-format
 EXTRA_CFLAGS ?=
@@ -48,6 +61,7 @@ BASE_CFLAGS := -O2 -Wall -g -Wundef -Werror=strict-prototypes -fno-common -fno-P
 	-Wsign-compare -Wunused-parameter -Wno-multichar \
 	-ffreestanding -fpic -ffunction-sections -fdata-sections \
 	-nostdinc -isystem $(shell $(CC) -print-file-name=include) -isystem sysinc \
+	-Isrc -Isrc/hv \
 	-fno-stack-protector -mstrict-align -march=armv8.2-a \
 	$(EXTRA_CFLAGS)
 
@@ -61,10 +75,18 @@ endif
 # Required for no_std + alloc for now
 export RUSTC_BOOTSTRAP=1
 RUST_LIB := librust.a
-RUST_LIBS :=
+ifeq ($(BUILDSTD),1)
+CARGO_FLAGS := -Z build-std=alloc,core
+else
+CARGO_FLAGS :=
+endif
+
+# workaround https://github.com/rust-lang/rust/issues/163614 LLVM 23 regression in rust 1.99.0
+CARGO_RUSTFLAGS := --config 'build.rustflags = ["-C", "llvm-args=-disable-loop-idiom-wcslen"]'
+
 ifeq ($(CHAINLOADING),1)
 CFG += CHAINLOADING
-RUST_LIBS += $(RUST_LIB)
+CARGO_FLAGS += --features chainload
 endif
 
 LDFLAGS := -EL -maarch64elf --no-undefined -X -Bsymbolic \
@@ -83,6 +105,18 @@ LIBFDT_OBJECTS := $(patsubst %,libfdt/%, \
 	fdt_addresses.o fdt_empty_tree.o fdt_ro.o fdt_rw.o fdt_strerror.o fdt_sw.o \
 	fdt_wip.o fdt.o)
 
+CHICKENS_OBJECTS := $(patsubst %,chickens/%, \
+	avalanche.o \
+	blizzard.o \
+	cyclone_typhoon.o \
+	everest.o \
+	firestorm.o \
+	hurricane_zephyr.o \
+	icestorm.o \
+	monsoon_mistral.o \
+	sawtooth.o \
+	twister.o)
+
 DCP_OBJECTS := $(patsubst %,dcp/%, \
 	dpav_ep.o \
 	dptx_phy.o \
@@ -90,25 +124,27 @@ DCP_OBJECTS := $(patsubst %,dcp/%, \
 	parser.o \
 	system_ep.o)
 
+HV_OBJECTS := $(patsubst %,hv/%, \
+	hv.o \
+	hv_aic.o \
+	hv_asm.o \
+	hv_exc.o \
+	hv_sprr.o \
+	hv_sptm.o \
+	hv_virtio.o \
+	hv_vm.o \
+	hv_vuart.o \
+	hv_wdt.o)
+
 OBJECTS := \
 	adt.o \
 	afk.o \
 	aic.o \
 	asc.o \
-	bootlogo_128.o bootlogo_256.o \
+	bootlogo_48.o bootlogo_128.o bootlogo_256.o \
 	chainload.o \
 	chainload_asm.o \
 	chickens.o \
-	chickens_avalanche.o \
-	chickens_blizzard.o \
-	chickens_cyclone_typhoon.o \
-	chickens_everest.o \
-	chickens_firestorm.o \
-	chickens_hurricane_zephyr.o \
-	chickens_monsoon_mistral.o \
-	chickens_icestorm.o \
-	chickens_sawtooth.o \
-	chickens_twister.o \
 	clk.o \
 	cpufreq.o \
 	dapf.o \
@@ -117,18 +153,20 @@ OBJECTS := \
 	dcp_iboot.o \
 	devicetree.o \
 	display.o \
+	dockchannel_uart.o \
 	exception.o exception_asm.o \
 	fb.o font.o font_retina.o \
 	firmware.o \
 	gxf.o gxf_asm.o \
 	heapblock.o \
-	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_wdt.o hv_asm.o hv_aic.o hv_virtio.o \
 	i2c.o \
 	iodev.o \
 	iova.o \
 	isp.o \
-	kboot.o \
+	kboot.o kboot_atc.o \
+	kboot_t6020_compat.o \
 	main.o \
+	mitigations.o \
 	mcc.o \
 	memory.o memory_asm.o \
 	nvme.o \
@@ -143,6 +181,7 @@ OBJECTS := \
 	sio.o \
 	smc.o \
 	smp.o \
+	spmi.o \
 	start.o \
 	startup.o \
 	string.o \
@@ -154,8 +193,10 @@ OBJECTS := \
 	utils.o utils_asm.o \
 	vsprintf.o \
 	wdt.o \
+	$(CHICKENS_OBJECTS) \
 	$(DCP_OBJECTS) \
-	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS) $(RUST_LIBS)
+	$(HV_OBJECTS) \
+	$(MINILZLIB_OBJECTS) $(TINF_OBJECTS) $(DLMALLOC_OBJECTS) $(LIBFDT_OBJECTS)
 
 FP_OBJECTS := \
 	kboot_gpu.o \
@@ -166,31 +207,32 @@ FP_OBJECTS := \
 
 BUILD_OBJS := $(patsubst %,build/%,$(OBJECTS))
 BUILD_FP_OBJS := $(patsubst %,build/%,$(FP_OBJECTS))
-BUILD_ALL_OBJS := $(BUILD_OBJS) $(BUILD_FP_OBJS)
+BUILD_RUST_LIB := $(patsubst %,build/%,$(RUST_LIB))
+BUILD_ALL_OBJS := $(BUILD_OBJS) $(BUILD_FP_OBJS) $(BUILD_RUST_LIB)
 NAME := m1n1
 TARGET := m1n1.macho
 TARGET_RAW := m1n1.bin
 
 DEPDIR := build/.deps
 
-.PHONY: all clean format update_tag update_cfg invoke_cc
-all: update_tag update_cfg build/$(TARGET) build/$(TARGET_RAW)
+.PHONY: all clean format invoke_cc always_rebuild
+all: build/$(TARGET) build/$(TARGET_RAW)
 clean:
-	rm -rf build/*
+	rm -rf build/* build/.deps
 format:
-	$(CLANG_FORMAT) -i src/*.c src/dcp/*.c src/math/*.c src/*.h src/dcp/*.h src/math/*.h sysinc/*.h
+	$(CLANG_FORMAT) -i src/*.c src/chickens/*.c src/dcp/*.c src/hv/*.c src/math/*.c src/*.h src/dcp/*.h src/hv/*.h src/math/*.h sysinc/*.h
 format-check:
-	$(CLANG_FORMAT) --dry-run --Werror src/*.c src/dcp/*.c src/math/*.c src/*.h src/dcp/*.h src/math/*.h sysinc/*.h
+	$(CLANG_FORMAT) --dry-run --Werror src/*.c src/chickens/*.c src/dcp/*.c src/hv/*.c src/math/*.c src/*.h src/dcp/*.h src/hv/*.h src/math/*.h sysinc/*.h
 rustfmt:
 	cd rust && cargo fmt
 rustfmt-check:
 	cd rust && cargo fmt --check
 
-build/$(RUST_LIB): rust/src/* rust/*
+build/$(RUST_LIB): src/../build/build_cfg.h rust/src/*.rs rust/src/gpu/*.rs rust/src/gpu/hw/*.rs rust/Cargo.toml rust/Cargo.lock
 	$(QUIET)echo "  RS    $@"
 	$(QUIET)mkdir -p $(DEPDIR)
 	$(QUIET)mkdir -p "$(dir $@)"
-	$(QUIET)cargo build --target $(RUSTARCH) --lib --release --manifest-path rust/Cargo.toml --target-dir build
+	$(QUIET)cargo build $(CARGO_RUSTFLAGS) $(CARGO_FLAGS) --target $(RUSTARCH) --lib --release --manifest-path rust/Cargo.toml --target-dir build
 	$(QUIET)cp "build/$(RUSTARCH)/release/${RUST_LIB}" "$@"
 
 build/%.o: src/%.S
@@ -205,7 +247,7 @@ $(BUILD_FP_OBJS): build/%.o: src/%.c
 	$(QUIET)mkdir -p "$(dir $@)"
 	$(QUIET)$(CC) -c $(BASE_CFLAGS) -MMD -MF $(DEPDIR)/$(*F).d -MQ "$@" -MP -o $@ $<
 
-build/%.o: src/%.c
+build/%.o: src/%.c build-tag build-cfg
 	$(QUIET)echo "  CC    $@"
 	$(QUIET)mkdir -p $(DEPDIR)
 	$(QUIET)mkdir -p "$(dir $@)"
@@ -213,7 +255,7 @@ build/%.o: src/%.c
 
 # special target for usage by m1n1.loadobjs
 invoke_cc:
-	$(QUIET)$(CC) -c $(CFLAGS) -Isrc -o $(OBJFILE) $(CFILE)
+	$(QUIET)$(CC) -c $(CFLAGS) -Isrc -Isrc/hv -o $(OBJFILE) $(CFILE)
 
 build/$(NAME).elf: $(BUILD_ALL_OBJS) m1n1.ld
 	$(QUIET)echo "  LD    $@"
@@ -227,24 +269,33 @@ build/$(NAME).macho: build/$(NAME).elf
 	$(QUIET)echo "  MACHO $@"
 	$(QUIET)$(OBJCOPY) -O binary --strip-debug $< $@
 
+ifeq ($(LOGO),)
 build/$(NAME).bin: build/$(NAME)-raw.elf
 	$(QUIET)echo "  RAW   $@"
 	$(QUIET)$(OBJCOPY) -O binary --strip-debug $< $@
 
-update_tag:
+else
+build/$(NAME)-asahi.bin: build/$(NAME)-raw.elf
+	$(QUIET)echo "  RAW   $@"
+	$(QUIET)$(OBJCOPY) -O binary --strip-debug $< $@
+
+build/$(NAME).bin: build/$(NAME)-asahi.bin build/$(LOGO).logo
+	$(QUIET)echo "  RAW   $@"
+	$(QUIET)cat $^ > $@
+endif
+
+.INTERMEDIATE: build-tag build-cfg
+build-tag src/../build/build_tag.h &:
 	$(QUIET)mkdir -p build
 	$(QUIET)./version.sh > build/build_tag.tmp
 	$(QUIET)cmp -s build/build_tag.h build/build_tag.tmp 2>/dev/null || \
 	( mv -f build/build_tag.tmp build/build_tag.h && echo "  TAG   build/build_tag.h" )
 
-update_cfg:
+build-cfg src/../build/build_cfg.h &:
 	$(QUIET)mkdir -p build
 	$(QUIET)for i in $(CFG); do echo "#define $$i"; done > build/build_cfg.tmp
 	$(QUIET)cmp -s build/build_cfg.h build/build_cfg.tmp 2>/dev/null || \
 	( mv -f build/build_cfg.tmp build/build_cfg.h && echo "  CFG   build/build_cfg.h" )
-
-build/build_tag.h: update_tag
-build/build_cfg.h: update_cfg
 
 build/%.bin: data/%.bin
 	$(QUIET)echo "  IMG   $@"
@@ -261,8 +312,16 @@ build/%.bin: font/%.bin
 	$(QUIET)mkdir -p "$(dir $@)"
 	$(QUIET)cp $< $@
 
-build/main.o: build/build_tag.h build/build_cfg.h src/main.c
-build/usb_dwc3.o: build/build_tag.h src/usb_dwc3.c
-build/chainload.o: build/build_cfg.h src/usb_dwc3.c
+build/%.rgba: data/%.png
+	$(eval SIZE := $(lastword $(subst _, ,$*)))
+	$(QUIET)echo "  MAGIC $@"
+	$(QUIET)mkdir -p "$(dir $@)"
+	$(QUIET)magick $< -background black -flatten -depth 8 -crop $(SIZE)x$(SIZE) -resize $(SIZE)x$(SIZE) rgba:$@
+
+build/%.logo: build/%_256.rgba build/%_128.rgba
+	$(QUIET)echo "  PAYLOAD $@"
+	$(QUIET)mkdir -p "$(dir $@)"
+	$(QUIET)echo -n "m1n1_logo_256128" > $@
+	$(QUIET)cat $^ >> $@
 
 -include $(DEPDIR)/*

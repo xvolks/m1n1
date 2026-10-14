@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import io, sys, traceback, struct, array, bisect, os, plistlib, signal, runpy
 from construct import *
 
 from ..asm import ARMAsm
 from ..tgtypes import *
-from ..proxy import IODEV, START, EVENT, EXC, EXC_RET, ExcInfo
+from ..proxy import IODEV, START, EVENT, EXC, EXC_RET, ExcInfo, SPTM_MODE
 from ..utils import *
 from ..sysreg import *
 from ..macho import MachO
@@ -15,6 +15,7 @@ from .gdbserver import *
 from .types import *
 from .virtutils import *
 from .virtio import *
+from .sprr import patch_text_sprr_emu
 
 __all__ = ["HV"]
 
@@ -107,6 +108,7 @@ class HV(Reloadable):
         self.wdt_cpu = None
         self.smp = True
         self.hook_exceptions = False
+        self.sptm_mode = SPTM_MODE.SPTM_NONE
         self.started_cpus = {}
         self.started = False
         self.ctx = None
@@ -655,7 +657,6 @@ class HV(Reloadable):
             VMSA_LOCK_EL1,
             #SPRR_UNK1_EL1,
             #SPRR_UNK2_EL1,
-            MDSCR_EL1,
         }
         ro = {
             ACC_CFG_EL1,
@@ -714,7 +715,10 @@ class HV(Reloadable):
                 sys.stdout.flush()
                 if enc in xlate:
                     value = self.p.hv_translate(value, True, False)
-                self.u.msr(enc2, value, call=self.p.gl2_call)
+                call=None
+                if self.u.cpu_features.apple_sysregs_unlocked:
+                    call=self.p.gl2_call
+                self.u.msr(enc2, value, call=call)
                 self.log(f"Pass: msr {name}, x{iss.Rt} = {value:x} (OK) ({sysreg_name(enc2)})")
 
         ctx.elr += 4
@@ -1355,8 +1359,12 @@ class HV(Reloadable):
 
     def set_logfile(self, fd):
         self.print_tracer.log_file = fd
+        self.iface.tty_log = fd
 
     def init(self):
+        if self.sptm_mode == SPTM_MODE.SPTM_EMULATION:
+            print("SPTM/SPRR/GXF: emulating in EL2 (guest image will be patched)")
+
         self.adt = load_adt(self.u.get_adt())
         self.iodev = self.p.iodev_whoami()
         self.tba = self.u.ba.copy()
@@ -1370,6 +1378,7 @@ class HV(Reloadable):
                 self.p.iodev_set_usage(iodev, 0)
 
         print("Initializing hypervisor over iodev %s" % self.iodev)
+        self.p.hv_sptm_set_mode(self.sptm_mode)
         self.p.hv_init()
 
         self.iface.set_handler(START.EXCEPTION_LOWER, EXC.SYNC, self.handle_exception)
@@ -1429,15 +1438,16 @@ class HV(Reloadable):
         self.u.msr(MDCR_EL2, mdcr.value)
         self.u.msr(MDSCR_EL1, MDSCR(MDE=1).value)
 
-        # Enable AMX
-        amx_ctl = AMX_CONFIG(self.u.mrs(AMX_CONFIG_EL1))
-        amx_ctl.EN_EL1 = 1
-        self.u.msr(AMX_CONFIG_EL1, amx_ctl.value)
+        if self.u.cpu_features.apple_sysregs_unlocked:
+            # Enable AMX
+            amx_ctl = AMX_CONFIG(self.u.mrs(AMX_CONFIG_EL1))
+            amx_ctl.EN_EL1 = 1
+            self.u.msr(AMX_CONFIG_EL1, amx_ctl.value)
 
-        # Set guest AP keys
-        self.u.msr(VMKEYLO_EL2, 0x4E7672476F6E6147)
-        self.u.msr(VMKEYHI_EL2, 0x697665596F755570)
-        self.u.msr(APSTS_EL12, 1)
+            # Set guest AP keys
+            self.u.msr(VMKEYLO_EL2, 0x4E7672476F6E6147)
+            self.u.msr(VMKEYHI_EL2, 0x697665596F755570)
+            self.u.msr(APSTS_EL12, 1)
 
         self.map_vuart()
 
@@ -1482,18 +1492,16 @@ class HV(Reloadable):
 
         pmgr = self.adt["/arm-io/pmgr"]
         dev_by_name = {dev.name: dev for dev in pmgr.devices}
-        dev_by_id = {dev.id: dev for dev in pmgr.devices}
+        dev_by_id = {self.adt.pmgr_dev_get_id(dev): dev for dev in pmgr.devices}
 
         pmgr_hooks = []
 
         def hook_pmgr_dev(dev):
-            ps = pmgr.ps_regs[dev.psreg]
-            if dev.psidx or dev.psreg:
-                addr = pmgr.get_reg(ps.reg)[0] + ps.offset + dev.psidx * 8
-                pmgr_hooks.append(addr)
-                for idx in dev.parents:
-                    if idx in dev_by_id:
-                        hook_pmgr_dev(dev_by_id[idx])
+            addr = self.adt.pmgr_dev_get_addr(dev)
+            pmgr_hooks.append(addr)
+            for idx in self.adt.pmgr_dev_get_parents(dev):
+                if idx in dev_by_id:
+                    hook_pmgr_dev(dev_by_id[idx])
 
         for name in hook_devs:
             dev = dev_by_name[name]
@@ -1530,18 +1538,11 @@ class HV(Reloadable):
             self.map_hook(addr, 8, write=wh)
             self.add_tracer(irange(addr, 8), "CPU HACK", TraceMode.RESERVED)
 
-        def cpu_state_rh(base, off, width):
-            data = ret = self.p.read64(base + off)
-            die = base // 0x20_0000_0000
-            cluster = (base >> 24) & 0xf
-            cpu = (base >> 20) & 0xf
-            for i, j in self.started_cpus.items():
-                if j == (die, cluster, cpu):
-                    break
-            else:
-                ret &= ~0xff
-            self.log(f"CPU STATE R {base:x}+{off:x}:{width} = 0x{data:x} -> 0x{ret:x}")
-            return ret
+        # These are installed by m1n1 in hv.c, just reserve them here to prevent anyone
+        # from overwriting these later
+        for node in self.adt["cpus"]:
+            self.add_tracer(irange(node.cpu_impl_reg[0] + 0x100, 8),
+                            "CPU STATE HACK", TraceMode.RESERVED)
 
         def cpustart_wh(base, off, data, width):
             self.log(f"CPUSTART W {base:x}+{off:x}:{width} = 0x{data:x}")
@@ -1552,9 +1553,6 @@ class HV(Reloadable):
                 for i in range(32):
                     if data & (1 << i):
                         self.start_secondary(die, cluster, i)
-                        cpu_state = 0x210050100 | (die << 27) | (cluster << 24) | (i << 20)
-                        self.map_hook(cpu_state, 8, read=cpu_state_rh)
-                        self.add_tracer(irange(addr, 8), "CPU STATE HACK", TraceMode.RESERVED)
 
         die_count = self.adt["/arm-io"].die_count if hasattr(self.adt["/arm-io"], "die-count") else 1
 
@@ -1562,11 +1560,11 @@ class HV(Reloadable):
             chip_id = self.u.adt["/chosen"].chip_id
             if chip_id in (0x8103, 0x6000, 0x6001, 0x6002):
                 cpu_start = 0x54000 + die * 0x20_0000_0000
-            elif chip_id in (0x8112, 0x8122):
+            elif chip_id in (0x8112, 0x8122, 0x8132, 0x8140, 0x6030):
                 cpu_start = 0x34000 + die * 0x20_0000_0000
             elif chip_id in (0x6020, 0x6021, 0x6022):
                 cpu_start = 0x28000 + die * 0x20_0000_0000
-            elif chip_id in (0x6031,):
+            elif chip_id in (0x6031, 0x6032, 0x6034, 0x6040, 0x6041):
                 cpu_start = 0x88000 + die * 0x20_0000_0000
             else:
                 self.log("CPUSTART unknown for this SoC!")
@@ -1575,6 +1573,19 @@ class HV(Reloadable):
             zone = irange(pmgr0_start + cpu_start, 0x20)
             self.map_hook(pmgr0_start + cpu_start, 0x20, write=cpustart_wh)
             self.add_tracer(zone, "CPU_START", TraceMode.RESERVED)
+
+        if not self.u.cpu_features.apple_sysregs_unlocked:
+
+            def rvbar_rh(base, off, width):
+                ret = self.entry & ~0xfff | 1
+                self.log(f"RVBAR R {base:x}+{off:x}:{width} -> 0x{ret:x}")
+                return ret
+
+            for cpu in self.adt["cpus"]:
+                addr, _ = cpu.cpu_impl_reg
+                zone = irange(addr, 4)
+                self.map_hook(addr, 4, read=rvbar_rh)
+                self.add_tracer(zone, "RVBAR", TraceMode.RESERVED)
 
     def start_secondary(self, die, cluster, cpu):
         self.log(f"Starting guest secondary {die}:{cluster}:{cpu}")
@@ -1586,7 +1597,10 @@ class HV(Reloadable):
             self.log("CPU not found!")
             return
 
-        entry = self.p.read64(node.cpu_impl_reg[0]) & 0xfffffffffff
+        if self.u.cpu_features.apple_sysregs_unlocked:
+            entry = self.p.read64(node.cpu_impl_reg[0]) & 0xfffffffffff
+        else:
+            entry = self.entry & ~0xfff
         index = node.cpu_id
         self.log(f" CPU #{index}: RVBAR = {entry:#x}")
 
@@ -1597,8 +1611,15 @@ class HV(Reloadable):
     def setup_adt(self):
         self.adt["product"].product_name += " on m1n1 hypervisor"
         self.adt["product"].product_description += " on m1n1 hypervisor"
-        soc_name = "Virtual " + self.adt["product"].product_soc_name + " on m1n1 hypervisor"
+        if self.sptm_mode == SPTM_MODE.SPTM_EMULATION:
+            soc_name = "Virtual " + self.adt["product"].product_soc_name + " on cursed m1n1 hypervisor"
+        else:
+            soc_name = "Virtual " + self.adt["product"].product_soc_name + " on m1n1 hypervisor"
         self.adt["product"].product_soc_name = soc_name
+
+        # change default serial to uart0 instead of UART-via-dockchannel
+        # to re-enable XNU serial output for newer macOS versions
+        self.adt["defaults"].serial_device = getattr(self.adt["/arm-io/uart0"], "AAPL,phandle")
 
         if self.iodev >= IODEV.USB0:
             idx = self.iodev - IODEV.USB0
@@ -1612,6 +1633,9 @@ class HV(Reloadable):
                            "/arm-io/dart-apciec%d",
                            "/arm-io/apciec%d-piodma",
                            "/arm-io/i2c0/hpmBusManager/hpm%d",
+                           "/arm-io/i2c0/hpmBusManager1/hpm%d",
+                           "/arm-io/i2c3/hpmBusManager0/hpm%d",
+                           "/arm-io/nub-spmi-a0/hpm%d",
                            "/arm-io/atc%d-dpxbar",
                            "/arm-io/atc%d-dpphy",
                            "/arm-io/atc%d-dpin0",
@@ -1624,6 +1648,15 @@ class HV(Reloadable):
                     del self.adt[name]
                 except KeyError:
                     pass
+
+            target = f"atc{idx}"
+            for node in self.adt["/arm-io"]:
+                if not node.name.startswith("display-crossbar"):
+                    continue
+                endpoints = node.getprop("dfp-endpoints", [])
+                if target in endpoints:
+                    node.dfp_endpoints = [name for name in endpoints if name != target]
+                    print(f"Removing display endpoint {target} from {node._path}")
 
         if self.wdt_cpu is not None:
             name = f"/cpus/cpu{self.wdt_cpu}"
@@ -1736,15 +1769,23 @@ class HV(Reloadable):
         if hasattr(self.u.adt["chosen"]["memory-map"], "Kernel_mach__header"):
             self.adt["chosen"]["memory-map"].Kernel_mach__header = (guest_base, 0)
 
-        for name in ("mtp", "aop"):
-            if name in self.adt["/arm-io"]:
-                iop = self.adt[f"/arm-io/{name}"]
-                nub = self.adt[f"/arm-io/{name}/iop-{name}-nub"]
-                if iop.segment_names.endswith(";__OS_LOG"):
-                    iop.segment_names = iop.segment_names[:-9]
-                    nub.segment_names = nub.segment_names[:-9]
-                    iop.segment_ranges = iop.segment_ranges[:-32]
-                    nub.segment_ranges = nub.segment_ranges[:-32]
+        def remove_oslog(node):
+            names = node.segment_names.split(";")
+            try:
+                idx = names.index("__OS_LOG")
+            except ValueError:
+                return
+            print(f"Removing __OS_LOG from {node.name}")
+            names = names[:idx] + names[idx + 1:]
+            node.segment_names = ";".join(names)
+            node.segment_ranges = node.segment_ranges[:idx * 32] + node.segment_ranges[32 + idx * 32: ]
+
+        for node in self.adt["/arm-io"]:
+            if hasattr(node, "segment_names"):
+                remove_oslog(node)
+            for nub in node:
+                if hasattr(nub, "segment_names"):
+                    remove_oslog(nub)
 
         print(f"Setting up bootargs at 0x{guest_base + self.bootargs_off:x}...")
 
@@ -1757,16 +1798,22 @@ class HV(Reloadable):
         if use_xnu_symbols == True:
             self.sym_offset = vmin - guest_base + self.tba.phys_base - self.tba.virt_base
 
-        self.iface.writemem(guest_base + self.bootargs_off, BootArgs.build(self.tba))
+        if self.tba.revision <= 1:
+            self.iface.writemem(guest_base + self.bootargs_off, BootArgs_r1.build(self.tba))
+        elif self.tba.revision == 2:
+            self.iface.writemem(guest_base + self.bootargs_off, BootArgs_r2.build(self.tba))
+        elif self.tba.revision == 3:
+            self.iface.writemem(guest_base + self.bootargs_off, BootArgs_r3.build(self.tba))
 
-        print("Setting secondary CPU RVBARs...")
-        rvbar = self.entry & ~0xfff
-        for cpu in self.adt["cpus"]:
-            if cpu.state == "running":
-                continue
-            addr, size = cpu.cpu_impl_reg
-            print(f"  {cpu.name}: [0x{addr:x}] = 0x{rvbar:x}")
-            self.p.write64(addr, rvbar)
+        if self.u.cpu_features.apple_sysregs_unlocked:
+            print("Setting secondary CPU RVBARs...")
+            rvbar = self.entry & ~0xfff
+            for cpu in self.adt["cpus"]:
+                if cpu.state == "running":
+                    continue
+                addr, size = cpu.cpu_impl_reg
+                print(f"  {cpu.name}: [0x{addr:x}] = 0x{rvbar:x}")
+                self.p.write64(addr, rvbar)
 
     def _load_macho_symbols(self):
         self.symbol_dict = self.macho.symbols
@@ -1788,35 +1835,67 @@ class HV(Reloadable):
 
         self._load_macho_symbols()
 
+        def patch_m3_regs(data, fileoff):
+            inst = 0xd503201f # noop
+
+            a = array.array("I", data)
+
+            # search for msr instructons with following system regs:
+            # - AGTCNTRDIR_EL12 (s3_4_c15_c14_6)
+            # - AHCR_EL2 (s3_4_c15_c12_1)
+            p = 0
+            while (p := data.find(b"\x1c\xd5", p)) != -1:
+                if (p & 3) != 2:
+                    p += 1
+                    continue
+
+                # mask source register from msr opcode
+                opcode = a[p // 4] & ~0x1f
+                if opcode == 0xd51cfec0 or opcode == 0xd51cfc20:
+                    off = fileoff + (p & ~3)
+                    if off >= 0xbfcfc0:
+                        print(f"  0x{off:x}: 0x{opcode:04x} -> noop(0x{inst:x})")
+                        a[p // 4] = inst
+                p += 4
+
+            # search for mrs instructons with following system regs:
+            # - AHCR_EL2 (s3_4_c15_c12_1)
+            p = 0
+            while (p := data.find(b"\x3c\xd5", p)) != -1:
+                if (p & 3) != 2:
+                    p += 1
+                    continue
+
+                # mask source register from msr opcode
+                opcode = a[p // 4] & ~0x1f
+                if opcode == 0xd53cfc20:
+                    off = fileoff + (p & ~3)
+                    if off >= 0xbfcfc0:
+                        print(f"  0x{off:x}: 0x{opcode:04x} -> noop(0x{inst:x})")
+                        a[p // 4] = inst
+                p += 4
+
+            return a.tobytes()
+
+        chip_id = self.u.adt["/chosen"].chip_id
+        do_patch_m3_regs = chip_id in (0x8122, 0x6030, 0x6031, 0x6032, 0x6034)
+
         def load_hook(data, segname, size, fileoff, dest):
             if segname != "__TEXT_EXEC":
                 return data
 
             print(f"Patching segment {segname}...")
-
-            a = array.array("I", data)
-
-            output = []
-
-            p = 0
-            while (p := data.find(b"\x20\x00", p)) != -1:
-                if (p & 3) != 2:
-                    p += 1
-                    continue
-
-                opcode = a[p // 4]
-                inst = self.hvc((opcode & 0xffff))
-                off = fileoff + (p & ~3)
-                if off >= 0xbfcfc0:
-                    print(f"  0x{off:x}: 0x{opcode:04x} -> hvc 0x{opcode:x} (0x{inst:x})")
-                    a[p // 4] = inst
-                p += 4
-
+            if self.sptm_mode == SPTM_MODE.SPTM_EMULATION:
+                data = patch_text_sprr_emu(data, log=print)
+            if do_patch_m3_regs:
+                data = patch_m3_regs(data, fileoff)
             print("Done.")
-            return a.tobytes()
+            return data
 
-        #image = macho.prepare_image(load_hook)
-        image = macho.prepare_image()
+        if self.sptm_mode == SPTM_MODE.SPTM_EMULATION or do_patch_m3_regs:
+            image = macho.prepare_image(load_hook)
+        else:
+            image = macho.prepare_image()
         self.load_raw(image, entryoffset=(macho.entry - macho.vmin), use_xnu_symbols=self.xnu_mode and symfile is not None, vmin=macho.vmin)
 
     def update_pac_mask(self):
@@ -1888,6 +1967,7 @@ class HV(Reloadable):
 
         adt_blob = self.adt.build()
         print(f"Uploading ADT (0x{len(adt_blob):x} bytes)...")
+        assert len(adt_blob) <= align(self.u.ba.devtree_size)
         self.iface.writemem(self.adt_base, adt_blob)
 
         print("Improving logo...")
@@ -1896,11 +1976,12 @@ class HV(Reloadable):
         print("Shutting down framebuffer...")
         self.p.fb_shutdown(True)
 
-        print("Enabling SPRR...")
-        self.u.msr(SPRR_CONFIG_EL1, 1)
+        if self.sptm_mode == SPTM_MODE.SPTM_NONE and self.u.cpu_features.apple_sysregs_unlocked:
+            print("Enabling SPRR...")
+            self.u.msr(SPRR_CONFIG_EL1, 1)
 
-        print("Enabling GXF...")
-        self.u.msr(GXF_CONFIG_EL1, 1)
+            print("Enabling GXF...")
+            self.u.msr(GXF_CONFIG_EL1, 1)
 
         print(f"Jumping to entrypoint at 0x{self.entry:x}")
 

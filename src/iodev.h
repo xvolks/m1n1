@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef IODEV_H
 #define IODEV_H
@@ -8,8 +8,10 @@
 
 #define USB_IODEV_COUNT 8
 
+// enum must be kept in sync with IODEV in proxyclient/m1n1/proxy.py
 typedef enum _iodev_id_t {
     IODEV_UART,
+    IODEV_DOCKCHANNEL_UART,
     IODEV_FB,
     IODEV_USB_VUART,
     IODEV_USB0,
@@ -61,5 +63,7 @@ void iodev_console_flush(void);
 iodev_usage_t iodev_get_usage(iodev_id_t id);
 void iodev_set_usage(iodev_id_t id, iodev_usage_t usage);
 void *iodev_get_opaque(iodev_id_t id);
+
+void iodev_reset_rp(iodev_id_t id);
 
 #endif

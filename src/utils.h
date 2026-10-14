@@ -1,9 +1,10 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef UTILS_H
 #define UTILS_H
 
 #include "cpu_regs.h"
+#include "midr.h"
 #include "soc.h"
 #include "types.h"
 
@@ -21,6 +22,8 @@
 
 #define ALIGN_UP(x, a)   (((x) + ((a) - 1)) & ~((a) - 1))
 #define ALIGN_DOWN(x, a) ((x) & ~((a) - 1))
+
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
@@ -266,7 +269,7 @@ static inline void write64_lo_hi(u64 addr, u64 val)
 #define __mrs(reg)                                                                                 \
     ({                                                                                             \
         u64 val;                                                                                   \
-        __asm__ volatile("mrs\t%0, " #reg : "=r"(val));                                            \
+        __asm__ volatile(".arch armv9.4-a\nmrs\t%0, " #reg : "=r"(val));                           \
         val;                                                                                       \
     })
 #define _mrs(reg) __mrs(reg)
@@ -274,7 +277,7 @@ static inline void write64_lo_hi(u64 addr, u64 val)
 #define __msr(reg, val)                                                                            \
     ({                                                                                             \
         u64 __val = (u64)val;                                                                      \
-        __asm__ volatile("msr\t" #reg ", %0" : : "r"(__val));                                      \
+        __asm__ volatile(".arch armv9.4-a\nmsr\t" #reg ", %0" : : "r"(__val));                     \
     })
 #define _msr(reg, val) __msr(reg, val)
 
@@ -327,7 +330,7 @@ static inline void write64_lo_hi(u64 addr, u64 val)
 #define dma_wmb() sysop("dmb oshst")
 
 extern u32 board_id, chip_id;
-static inline bool has_ecores(void)
+static inline bool is_heterogeneous(void)
 {
     return !(chip_id == S5L8960X || chip_id == T7000 || chip_id == T7001 || chip_id == S8000 ||
              chip_id == S8001 || chip_id == S8003);
@@ -335,7 +338,14 @@ static inline bool has_ecores(void)
 
 static inline int is_ecore(void)
 {
-    return has_ecores() && !(mrs(MPIDR_EL1) & (1 << 16));
+    if (!is_heterogeneous())
+        return false;
+    u32 mpidr_el1 = mrs(MPIDR_EL1);
+    if (mpidr_el1 & MPIDR_CORE_TYPE_P)
+        return false;
+    if (mpidr_el1 & MPIDR_CORE_TYPE_M)
+        return false;
+    return true;
 }
 
 static inline int in_el2(void)
@@ -454,6 +464,18 @@ static inline int poll32(u64 addr, u32 mask, u32 target, u32 timeout)
     return -1;
 }
 
+static inline int poll64(u64 addr, u64 mask, u64 target, u32 timeout)
+{
+    while (--timeout > 0) {
+        u32 value = read64(addr) & mask;
+        if (value == target)
+            return 0;
+        udelay(1);
+    }
+
+    return -1;
+}
+
 typedef u64(generic_func)(u64, u64, u64, u64, u64);
 
 struct vector_args {
@@ -464,9 +486,36 @@ struct vector_args {
 
 extern u32 board_id, chip_id;
 
-extern bool is_mac, has_dcp;
-extern bool cpufeat_actlr_el2, cpufeat_fast_ipi, cpufeat_mmu_sprr;
-extern bool cpufeat_global_sleep, cpufeat_workaround_cyclone_cache;
+enum cpufeat_sleep_mode {
+    SLEEP_NONE,
+    SLEEP_LEGACY,
+    SLEEP_GLOBAL,
+};
+
+enum cpufeat_uncore_version {
+    UNCORE_NONE,
+    UNCORE_V1,
+    UNCORE_V2,
+};
+
+struct midr_part_features {
+    enum cpufeat_sleep_mode sleep_mode;
+    enum cpufeat_uncore_version uncore_version;
+    bool disable_dc_mva;
+    bool acc_cfg;
+    bool apple_sysregs_unlocked;
+    bool workaround_cyclone_cache;
+    bool nex_powergating;
+    bool fast_ipi;
+    bool mmu_sprr;
+    bool siq_cfg;
+    bool amx;
+    bool actlr_el2;
+    bool counter_redirect;
+};
+
+extern bool is_mac;
+extern const struct midr_part_features *cpu_features;
 
 extern struct vector_args next_stage;
 extern u64 boot_flags, mem_size_actual;

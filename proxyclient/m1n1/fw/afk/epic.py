@@ -1,10 +1,11 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 import struct
 from io import BytesIO
 from construct import *
 from ..common import *
 from ...utils import *
+from ...constructutils import Bool
 from ..asc import StandardASC
 from ..asc.base import *
 from .rbep import AFKRingBufEndpoint

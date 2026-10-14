@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef PMGR_H
 #define PMGR_H
@@ -14,10 +14,14 @@
 #define PMGR_PS_CLKGATE 0x4
 #define PMGR_PS_PWRGATE 0x0
 
+extern const char *pmgr_name;
+
 int pmgr_init(void);
 
 int pmgr_power_enable(u32 id);
 int pmgr_power_disable(u32 id);
+
+int pmgr_adt_path_offset_trace(const void *adt_ptr, int *path);
 
 int pmgr_adt_power_enable(const char *path);
 int pmgr_adt_power_disable(const char *path);
@@ -26,9 +30,12 @@ int pmgr_adt_power_disable_index(const char *path, u32 index);
 int pmgr_adt_reset(const char *path);
 
 int pmgr_reset(int die, const char *name);
+int pmgr_power_on(int die, const char *name);
 
 int pmgr_set_mode(uintptr_t addr, u8 target_mode);
 
 u32 pmgr_get_feature(const char *name);
+
+int pmgr_set_voltage_ctl(uint32_t offset);
 
 #endif

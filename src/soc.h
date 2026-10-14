@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef __SOC_H__
 #define __SOC_H__
@@ -19,14 +19,24 @@
 #define T8103 0x8103
 #define T8112 0x8112
 #define T8122 0x8122
+#define T8132 0x8132
+#define T8140 0x8140
+#define T8142 0x8142
+#define T8152 0x8152
 #define T6000 0x6000
 #define T6001 0x6001
 #define T6002 0x6002
 #define T6020 0x6020
 #define T6021 0x6021
 #define T6022 0x6022
+#define T6030 0x6030
 #define T6031 0x6031
+#define T6032 0x6032
 #define T6034 0x6034
+#define T6040 0x6040
+#define T6041 0x6041
+#define T6050 0x6050
+#define T6051 0x6051
 
 #ifdef TARGET
 
@@ -37,10 +47,24 @@
 #define EARLY_UART_BASE 0x39b200000
 #elif TARGET == T8112
 #define EARLY_UART_BASE 0x235200000
-#elif TARGET == T6034 || TARGET == T6031
+#elif TARGET == T8122
+#define EARLY_UART_BASE 0x2a1200000
+#elif TARGET == T8132
+#define EARLY_UART_BASE 0x3ad200000
+#elif TARGET == T8140 || TARGET == T8142
+#define EARLY_UART_BASE 0x385200000
+#elif TARGET == T8152
+#define EARLY_UART_BASE 0x331200000
+#elif TARGET == T6031 || TARGET == T6032 || TARGET == T6034
 #define EARLY_UART_BASE 0x391200000
 #elif TARGET == T8015
 #define EARLY_UART_BASE 0x22e600000
+#elif TARGET == T6030
+#define EARLY_UART_BASE 0x289200000
+#elif TARGET == T6040 || TARGET == T6041
+#define EARLY_UART_BASE 0x429200000
+#elif TARGET == T6050 || TARGET == T6051
+#define EARLY_UART_BASE 0x505200000
 #elif TARGET == T7000 || TARGET == T7001 || TARGET == S8000 || TARGET == S8001 ||                  \
     TARGET == S8003 || TARGET == T8010 || TARGET == T8011
 #if TARGET == T7000 && defined(TARGET_BOARD) && TARGET_BOARD == 0x34 // Apple TV HD

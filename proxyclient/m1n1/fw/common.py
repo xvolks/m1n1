@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 from dataclasses import dataclass
 from enum import IntEnum
@@ -18,9 +18,6 @@ int_ = int32_t
 ulong = uint64_t
 long_ = int64_t
 
-def Bool(c):
-    return ExprAdapter(c, lambda d, ctx: bool(d & 1), lambda d, ctx: int(d))
-
 def SizedArray(count, svar, subcon):
     return Padded(subcon.sizeof() * count, Array(lambda ctx: min(count, ctx.get(svar, ctx._.get(svar))), subcon))
 
@@ -29,8 +26,6 @@ def SizedBytes(count, svar):
 
 def UnkBytes(s):
     return Default(HexDump(Bytes(s)), b"\x00" * s)
-
-bool_ = Bool(Int8ul)
 
 class OSObject(Construct):
     TYPE = None

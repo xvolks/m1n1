@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef TYPES_H
 #define TYPES_H
@@ -27,6 +27,20 @@ typedef s64 ssize_t;
 
 #endif
 
+// clang-format off
+/*
+ *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-unused-function-attribute
+ *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Type-Attributes.html#index-unused-type-attribute
+ *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Variable-Attributes.html#index-unused-variable-attribute
+ *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Label-Attributes.html#index-unused-label-attribute
+ * clang: https://clang.llvm.org/docs/AttributeReference.html#maybe-unused-unused
+ *
+ * Copied from Linux' include/linux/compiler_attributes.h
+ */
+// clang-format on
+#define __always_unused __attribute__((__unused__))
+#define __maybe_unused  __attribute__((__unused__))
+
 #define UNUSED(x)  (void)(x)
 #define ALIGNED(x) __attribute__((aligned(x)))
 #define PACKED     __attribute__((packed))
@@ -53,7 +67,7 @@ typedef s64 ssize_t;
 #define MASK(x)                (BIT(x) - 1)
 #define GENMASK(msb, lsb)      ((BIT((msb + 1) - (lsb)) - 1) << (lsb))
 #define _FIELD_LSB(field)      ((field) & ~(field - 1))
-#define FIELD_PREP(field, val) ((val) * (_FIELD_LSB(field)))
+#define FIELD_PREP(field, val) (((val) * (_FIELD_LSB(field))) & (field))
 #define FIELD_GET(field, val)  (((val) & (field)) / _FIELD_LSB(field))
 
 #ifdef __ASSEMBLER__

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "adt.h"
 #include "errno.h"
@@ -105,7 +105,7 @@ struct copy_rule copy_rules[] = {
         .fw_param = PARAM_PANIC_BUFFER,
     },
     {
-        // peformance endpoint? FIFO?
+        // performance endpoint? FIFO?
         .blobsize = 0x4000,
         .fw_param = PARAM_UNK_030d,
     },

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 from construct import *
 from construct.core import Int16ul, Int32ul, Int64ul, Int8ul
@@ -49,8 +49,8 @@ class NVMERegs(RegMap):
     NVME_REG_PMREBS = 0x0E0C, Register32
     NVME_REG_PMRSWTP = 0x0E10, Register32
     NVME_REG_DBS = 0x1000, Register32
-    NVME_REG_DBS_ASQ = 0x1004, Register32
-    NVME_REG_DBS_IOSQ = 0x100C, Register32
+    NVME_REG_DBS_ACQ = 0x1004, Register32
+    NVME_REG_DBS_IOCQ = 0x100C, Register32
 
 
 AppleTunnelSetTime = Struct(

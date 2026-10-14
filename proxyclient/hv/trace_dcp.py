@@ -1,5 +1,6 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
+import os
 import struct
 from io import BytesIO
 
@@ -15,6 +16,8 @@ from m1n1.fw.afk.epic import *
 
 Ver.set_version(hv.u)
 
+from m1n1.fw.dcp.ipc import *
+
 class DCPDevType(IntEnum):
     DCP = 0
     DART_DCP = 1
@@ -23,6 +26,8 @@ class DCPDevType(IntEnum):
 def get_alias(node):
     if "aliases" in u.adt and hasattr(u.adt["aliases"], node):
         return u.adt["aliases"].getprop(node).rsplit('/', 1)[1]
+    if node == "dcp0" and node not in u.adt:
+        return "dcp"
     return node
 
 def get_dcp_device(dev_type, dcp):
@@ -35,8 +40,7 @@ def get_dcp_device(dev_type, dcp):
     else:
         raise KeyError(dev_type)
 
-dcp_name = "dcp0"
-#dcp_name = "dcpext0"
+dcp_name = os.environ.get("TRACE_DCP", "dcp0")
 
 trace_device(get_dcp_device(DCPDevType.DCP, dcp_name), True, ranges=[1])
 
@@ -342,10 +346,10 @@ class EPICEp(AFKEp):
             self.serv_map[key] = srv
 
     def handle_report(self, hdr, sub, fd):
-        if sub.type == 0x30:
+        if sub.type == EPICSubtype.ANNOUNCE:
             self.handle_report_init(hdr, sub, fd)
         else:
-            self.log(f"Report {sub.type:#x}")
+            self.log(f"Report {sub.type}")
             chexdump(fd.read(), print_fn=self.log)
 
     def handle_notify(self, hdr, sub, fd):
@@ -389,7 +393,7 @@ class EPICEp(AFKEp):
             fd.seek(off)
             cmd = EPICCmd.parse_stream(fd)
             if not cmd.rxbuf:
-                self.log(f"Response {sub.type:#x}: {cmd.retcode:#x}")
+                self.log(f"Response {sub.type}: {cmd.retcode:#x}")
                 return
 
             data = self.dart.ioread(self.stream, cmd.rxbuf, cmd.rxlen)
@@ -415,7 +419,7 @@ class EPICEp(AFKEp):
         cmd = EPICCmd.parse_stream(fd)
         payload = fd.read()
 
-        if sub.type == 0xc0 and cmd.txbuf:
+        if sub.type == EPICSubtype.STD_SERVICE and cmd.txbuf:
             data = self.dart.ioread(self.stream, cmd.txbuf, cmd.txlen)
             if len(data) < 64:
                 self.log(f"EPIC: short cmd, len={len(data)}")
@@ -431,7 +435,7 @@ class EPICEp(AFKEp):
                 self.log(f"[???] > group {sgroup} command {scmd}")
                 chexdump(data[64:64+slen], print_fn=lambda msg: self.log(f"[???] {msg}"))
         else:
-            self.log(f"Command {sub.type:#x}: {cmd.retcode:#x}")
+            self.log(f"Command {sub.type}: {cmd.retcode:#x}")
             if payload:
                 chexdump(payload, print_fn=self.log)
             if cmd.txbuf:
@@ -808,22 +812,8 @@ class DCPCallChannel(Reloadable):
         state.out_addr = self.buf + msg.OFF + 12 + in_len
         state.out_len = out_len
 
-        verb = self.dcpep.get_verbosity(tag)
-        if verb >= 1:
-            self.log(f"{dir}{self.name}.{msg.OFF:x} {tag}:{KNOWN_MSGS.get(tag, 'unk')} ({msg})")
-        if verb >= 2:
-            print(f"Message: {tag} ({KNOWN_MSGS.get(tag, 'unk')}): (in {in_len:#x}, out {out_len:#x})")
-            if data_in:
-                print(f"{dir} Input ({len(data_in):#x} bytes):")
-                chexdump(data_in[:self.state.max_len])
-
-        #if tag not in KNOWN_MSGS:
-            #hv.run_shell()
-
-        if self.state.dumpfile:
-            dump = f"CALL {dir} {msg.value:#018x} {self.name} {state.off:#x} {state.tag} {in_len:#x} {out_len:#x} {data_in.hex()}\n"
-            self.state.dumpfile.write(dump)
-            self.state.dumpfile.flush()
+        c = Call(dir, self.name, msg.OFF, tag, in_len, out_len, data_in)
+        c.print_req(logger = self.log)
 
         self.state.ch.setdefault(self.name, []).append(state)
 

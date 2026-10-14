@@ -1059,7 +1059,7 @@ class AGXHWDataB(ConstructClass):
         "unk_20" / Int64ul,
         "unk_28" / Int64ul,
         "unk_30" / Int64ul,
-        "unkptr_38" / Int64ul,
+        "timestamp_region_base" / Int64ul,
         "pad_40" / HexDump(Bytes(0x20)),
         Ver("V < V13_0B4", "yuv_matrices" / Array(15, Array(3, Array(4, Int16sl)))),
         Ver("V >= V13_0B4", "yuv_matrices" / Array(63, Array(3, Array(4, Int16sl)))),
@@ -1217,7 +1217,7 @@ class AGXHWDataB(ConstructClass):
         self.unk_30 = 0x6f_ffff8000
         self.pad_40 = bytes(0x20)
         # unmapped?
-        self.unkptr_38 = 0xffffffa0_11800000
+        self.timestamp_region_base = 0
         self.pad_1c8 = bytes(8)
 
         # Note: these are rounded poorly, need to recompute.
@@ -1578,6 +1578,49 @@ class InitData_GPUGlobalStats3D(ConstructClass):
         self.unk_4 = 0
         self.stats = InitData_GPUStats3D()
 
+class AGXFaultInfo(ConstructClass):
+    subcon = Struct(
+        "status" / Int32ul,
+        "do_not_halt" / Int32ul,
+        "did_not_halt" / Int32ul,
+        "unk_c" / Default(Int32ul, 0),
+        "unk_10" / Default(Int32ul, 0),
+        "unk_14" / Default(Int32ul, 0),
+        "total_halts" / Default(Int32ul, 0),
+        "unk_1c" / Default(Int32ul, 0),
+        "unk_20" / Default(Int32ul, 0),
+        "unk_24" / Default(Int32ul, 0),
+        "unk_28" / Default(Int32ul, 0),
+        "unk_2c" / Default(Int32ul, 0),
+        "unk_30" / Default(Int32ul, 0),
+        "unk_34" / Default(Int32ul, 0),
+        "unk_38" / Default(Int32ul, 0),
+        "unk_3c" / Default(Int32ul, 0),
+        "unk_40" / Default(Int32ul, 0),
+        "unk_44" / Default(Int32ul, 0),
+        "unk_48" / Default(Int32ul, 0),
+        "unk_4c" / Default(Int32ul, 0),
+        "unk_50" / Default(Int32ul, 0),
+        "unk_54" / Default(Int32ul, 0),
+        "unk_58" / Default(Int32ul, 0),
+        "unk_5c" / Default(Int32ul, 0),
+        "unk_60" / Default(Int32ul, 0),
+        "unk_64" / Default(Int32ul, 0),
+        "unk_68" / Default(Int32ul, 0),
+        "unk_6c" / Default(Int32ul, 0),
+        "unk_70" / Default(Int32ul, 0),
+        "unk_74" / Default(Int32ul, 0),
+        "unk_78" / Default(Int32ul, 0),
+        "unk_7c" / Default(Int32ul, 0),
+    )
+
+    def __init__(self):
+        self.status = 0
+        self.do_not_halt = 0
+        self.did_not_halt = 0
+
+        pass
+
 class InitData_RegionB(ConstructClass):
     subcon = Struct(
         "channels" / ChannelInfoSet,
@@ -1592,8 +1635,8 @@ class InitData_RegionB(ConstructClass):
         "stats_cp" / ROPointer(this.stats_cp_addr, Bytes(0x140)),
         "hwdata_a_addr" / Int64ul,
         "hwdata_a" / ROPointer(this.hwdata_a_addr, AGXHWDataA),
-        "unkptr_190" / Int64ul, # size: 0x80, empty
-        "unk_190" / ROPointer(this.unkptr_190, Bytes(0x80)),
+        "fault_info_addr" / Int64ul, # size: 0x80, empty
+        "fault_info" / ROPointer(this.fault_info_addr, AGXFaultInfo),
         "unkptr_198" / Int64ul, # size: 0xc0, fw writes timestamps into this
         "unk_198" / ROPointer(this.unkptr_198, Bytes(0xc0)),
         "hwdata_b_addr" / Int64ul, # size: 0xb80, io stuff
@@ -1738,6 +1781,17 @@ class PerfCounterDesc(ConstructClass):
         "pad0" / Int8ul,
         "pad1" / Int32ul,
     )
+    def __init__(self):
+        self.regs = 0
+        self.dis_mask = 0
+        self.en_mask = 0
+        self.source_mask = 0
+        self.base_reg = 0
+        self.unk_type = 0
+        self.count = 0
+        self.index = 0
+        self.pad0 = 0
+        self.pad1 = 0
 
 class InitData_RegionC(ConstructClass):
     subcon = Struct(
@@ -1904,11 +1958,28 @@ class InitData_RegionC(ConstructClass):
         self.unk_62 = 0
         self.unk_66_0 = bytes(0xc)
         self.unk_66 = 1
-        self.unk_6a = bytes(0x16)
-        self.unk_80 = bytes(0xf80)
-        self.unk_1000 = bytes(0x7000)
-        self.unk_8000 = bytes(0x900)
-        self.unk_8900_0 = 0
+        self.unk_6a = bytes(0x12)
+
+        self.perfctrs = [PerfCounterDesc() for i in range(512)]
+        self.perfctr_count = 0
+        self.unk_4080 = bytes(0x3f80)
+        self.unk_8000 = bytes(0x878)
+        self.unk_8878 = 0
+        self.unk_887c = 0
+        self.unk_8880 = bytes(0x10)
+        self.unk_8890 = 0
+
+        self.unkptr_8894 = 0
+        self.size_889c = 0
+        self.unkptr_88a0 = 0
+        self.perf_source_list = 0
+        self.perf_source_count = 0
+        self.unkptr_88b4 = 0
+        self.unk_88bc = 0
+        self.unk_88c0 = 0
+        self.unk_88c2 = 0
+        self.unkpad_88c3 = 0
+        self.unk_88c4 = 0
         self.unk_8900 = 1
         # Accessed with OSIncrementAtomic/OSDecrementAtomic
         self.unk_atomic = 0

@@ -1,8 +1,8 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef __CHICKENS_H__
 #define __CHICKENS_H__
 
-const char *init_cpu(void);
+void init_cpu(void);
 
 #endif

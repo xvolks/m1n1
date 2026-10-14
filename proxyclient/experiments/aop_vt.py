@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -13,8 +13,8 @@ from m1n1.fw.aop.client import AOPClient
 from m1n1.fw.aop.ipc import *
 
 # aop nodes have no clocks described in adt for j293. it does it itself
-p.pmgr_adt_clocks_enable("/arm-io/aop")
-p.pmgr_adt_clocks_enable("/arm-io/dart-aop")
+p.pmgr_adt_power_enable("/arm-io/aop")
+p.pmgr_adt_power_enable("/arm-io/dart-aop")
 
 p.usb_iodev_vuart_setup(p.iodev_whoami())
 p.iodev_set_usage(IODEV.USB_VUART, USAGE.UARTPROXY)

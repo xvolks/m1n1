@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 from m1n1.constructutils import *
 from construct import *
 from .microsequence import *
@@ -48,7 +48,7 @@ class WorkCommandInitBM(ConstructClass):
 
 class WorkCommandComputeUnk10(ConstructClass):
     """
-        occassionally sent before WorkCommandCP on the SubmitCP queue.
+        occasionally sent before WorkCommandCP on the SubmitCP queue.
     """
     subcon = Struct(
         "magic" / Const(0xa, Hex(Int32ul)),
@@ -57,7 +57,7 @@ class WorkCommandComputeUnk10(ConstructClass):
 
 class WorkCommandComputeUnk11(ConstructClass):
     """
-        occassionally sent before WorkCommandCP on the SubmitCP queue.
+        occasionally sent before WorkCommandCP on the SubmitCP queue.
     """
     subcon = Struct(
         "magic" / Const(0xb, Hex(Int32ul)),
@@ -178,16 +178,10 @@ class WorkCommandCP(ConstructClass):
         "encoder_params" / EncoderParams,
         "job_meta" / JobMeta,
         "ts1" / TimeStamp,
-        "ts2" / TimeStamp,
-        "ts3" / TimeStamp,
-        "unk_2c0" / Int32ul,
-        "unk_2c4" / Int32ul,
-        "unk_2c8" / Int32ul,
-        "unk_2cc" / Int32ul,
+        "ts_pointers" / TimeStampPointers,
+        "user_ts_pointers" / TimeStampPointers, # This is a guess, but it makes sense
         "client_sequence" / Int8ul,
-        "pad_2d1" / Default(HexDump(Bytes(0x3)), bytes(0x3)),
-        "unk_2d4" / Int32ul,
-        "unk_2d8" / Int8ul,
+        Ver("V >= V13_0B4", "unk_ts2" / TimeStamp),
         Ver("V >= V13_0B4", "unk_ts" / TimeStamp),
         Ver("V >= V13_0B4", "unk_2e1" / Default(HexDump(Bytes(0x1c)), bytes(0x1c))),
         Ver("V >= V13_0B4", "unk_flag" / Flag),
@@ -281,17 +275,13 @@ class WorkCommand3D(ConstructClass):
         "struct_7" / Start3DStruct7,
         "unk_buf2" / WorkCommand1_UnkBuf2,
         "ts1" / TimeStamp,
-        "ts2" / TimeStamp,
-        "ts3" / TimeStamp,
-        "unk_914" / Int32ul,
-        "unk_918" / Int64ul,
-        "unk_920" / Int32ul,
+        "ts_pointers" / TimeStampPointers,
+        "user_ts_pointers" / TimeStampPointers, # This is a guess, but it makes sense
         "client_sequence" / Int8ul,
-        "pad_925" / Default(HexDump(Bytes(0x3)), bytes(0x3)),
-        Ver("V >= V13_0B4", "unk_928_0" / Int32ul),
-        Ver("V >= V13_0B4", "unk_928_4" / Int8ul),
+        Ver("V >= V13_0B4", "unk_ts2" / TimeStamp),
         Ver("V >= V13_0B4", "unk_ts" / TimeStamp),
-        Ver("V >= V13_0B4", "unk_928_d" / Default(HexDump(Bytes(0x1b)), bytes(0x1b))),
+        Ver("V >= V13_0B4", "unk_pad3" / Default(HexDump(Bytes(0x20)), bytes(0x20))),
+        "pad_925" / Default(HexDump(Bytes(0x3)), bytes(0x3)),
         Ver("V == V13_3", "unk_pad2" / Default(HexDump(Bytes(0x3c)), bytes(0x3c))),
     )
 
@@ -365,19 +355,14 @@ class WorkCommandTA(ConstructClass):
         "unk_594" / WorkCommand0_UnkBuf,
 
         "ts1" / TimeStamp,
-        "ts2" / TimeStamp,
-        "ts3" / TimeStamp,
+        "ts_pointers" / TimeStampPointers,
+        "user_ts_pointers" / TimeStampPointers, # This is a guess, but it makes sense
 
-        "unk_5c4" / Int32ul,
-        "unk_5c8" / Int32ul,
-        "unk_5cc" / Int32ul,
-        "unk_5d0" / Int32ul,
         "client_sequence" / Int8ul,
-        "pad_5d5" / Default(HexDump(Bytes(0x3)), bytes(0x3)),
-        Ver("V >= V13_0B4", "unk_5d8_0" / Int32ul),
-        Ver("V >= V13_0B4", "unk_5d8_4" / Int8ul),
+        Ver("V >= V13_0B4", "unk_ts2" / TimeStamp),
         Ver("V >= V13_0B4", "unk_ts" / TimeStamp),
-        Ver("V >= V13_0B4", "unk_5d8_d" / Default(HexDump(Bytes(0x13)), bytes(0x13))),
+        Ver("V >= V13_0B4", "unk_5d8_15" / Default(HexDump(Bytes(0x18)), bytes(0x18))),
+        "pad_5d5" / Default(HexDump(Bytes(0x3)), bytes(0x3)),
         "pad_5d8" / Default(HexDump(Bytes(0x8)), bytes(0x8)),
         Ver("V >= V13_3", "unk_pad2" / Default(HexDump(Bytes(0xc)), bytes(0xc))),
     )
@@ -411,12 +396,8 @@ class WorkCommandBlit(ConstructClass):
         "encoder_params" / EncoderParams,
         "unk_618" / Int32ul,
         "ts1" / TimeStamp,
-        "ts2" / TimeStamp,
-        "ts3" / TimeStamp,
-        "unk_634" / Int32ul,
-        "unk_638" / Int32ul,
-        "unk_63c" / Int32ul,
-        "unk_640" / Int32ul,
+        "ts_pointers" / TimeStampPointers,
+        "user_ts_pointers" / TimeStampPointers,
         "client_sequence" / Int8ul,
         "pad_645" / Default(HexDump(Bytes(0x3)), bytes(0x3)),
         "unk_648" / Int32ul,
@@ -460,11 +441,16 @@ class JobList(ConstructClass):
 
 class GPUContextData(ConstructClass):
     subcon = Struct(
-        "unk_0" / Int8ul,
-        "unk_1" / Int8ul,
+        "queue_table_index" / Int8ul,
+        "pid_table_index" / Int8ul,
         "unk_2" / Default(Bytes(3), bytes(3)),
         "unk_5" / Int8ul,
-        "unk_6" / Default(Bytes(0x18), bytes(0x18)),
+        "unk_6" / Int32ul,
+        "unk_a" / Int32ul,
+        "unk_e" / Int32ul,
+        "unk_12" / Int32ul,
+        "unk_16" / Int32ul,
+        "unk_1a" / Int32ul,
         "unk_1e" / Int8ul,
         "unk_1f" / Int8ul,
         "unk_20" / Default(Bytes(3), bytes(3)),
@@ -473,9 +459,15 @@ class GPUContextData(ConstructClass):
     )
 
     def __init__(self):
-        self.unk_0 = 0xff
-        self.unk_1 = 0xff
+        self.queue_table_index = 0xff
+        self.pid_table_index = 0xff
         self.unk_5 = 1
+        self.unk_6 = 0
+        self.unk_a = 0
+        self.unk_e = 0
+        self.unk_12 = 0
+        self.unk_16 = 0
+        self.unk_1a = 0
         self.unk_1e = 0xff
         self.unk_1f = 0
         self.unk_23 = 2
@@ -529,12 +521,12 @@ class CommandQueueInfo(ConstructClass):
         "gpu_rptr2" / Hex(Int32ul),
         "gpu_rptr3" / Hex(Int32ul),
         "event_id" / Int32sl,
-        "unk_30" / Hex(Int32ul), # read by CPU
+        "priority" / Hex(Int32ul), # read by CPU
         "unk_34" / Hex(Int32ul),
         "unk_38" / Hex(Int64ul),
         "unk_40" / Hex(Int32ul), # 1
         "unk_44" / Hex(Int32ul), # 0
-        "unk_48" / Hex(Int32ul), # 1, 2
+        "prio5" / Hex(Int32ul), # 1, 2
         "unk_4c" / Int32sl, # -1
         "uuid" / Hex(Int32ul), # Counts up for each new process or command queue
         "unk_54" / Int32sl,
@@ -547,7 +539,7 @@ class CommandQueueInfo(ConstructClass):
         "unk_8c" / Int32ul,
         "unk_90" / Int32ul,
         "unk_94" / Int32ul,
-        "pending" / Int32ul,
+        "inflight_commands" / Int32ul,
         "unk_9c" / Int32ul,
         Ver("V >= V13_2 && G < G14X", "unk_a0_0" / Int32ul),
         "gpu_context_addr" / Hex(Int64ul), # GPU managed context, shared between 3D and TA. Passed to DC_DestroyContext
@@ -574,7 +566,7 @@ class CommandQueueInfo(ConstructClass):
         self.unk_8c = 0
         self.unk_90 = 0
         self.unk_94 = 0
-        self.pending = 0
+        self.inflight_commands = 0
         self.unk_9c = 0
         self.unk_a0_0 = 0
         self.set_prio(0)
@@ -583,33 +575,33 @@ class CommandQueueInfo(ConstructClass):
 
     def set_prio(self, p):
         if p == 0:
-            self.unk_30 = 0
+            self.priority = 0
             self.unk_34 = 0 # 0-3?
             self.unk_38 = 0xffff_ffff_ffff_0000
             self.unk_40 = 1
             self.unk_44 = 0
-            self.unk_48 = 1
+            self.prio5 = 1
         elif p == 1:
-            self.unk_30 = 1
+            self.priority = 1
             self.unk_34 = 1
             self.unk_38 = 0xffff_ffff_0000_0000
             self.unk_40 = 0
             self.unk_44 = 0
-            self.unk_48 = 0
+            self.prio5 = 0
         elif p == 2:
-            self.unk_30 = 2
+            self.priority = 2
             self.unk_34 = 2
             self.unk_38 = 0xffff_0000_0000_0000
             self.unk_40 = 0
             self.unk_44 = 0
-            self.unk_48 = 2
+            self.prio5 = 2
         else:
-            self.unk_30 = 3
+            self.priority = 3
             self.unk_34 = 3
             self.unk_38 = 0x0000_0000_0000_0000
             self.unk_40 = 0
             self.unk_44 = 0
-            self.unk_48 = 3
+            self.prio5 = 3
 
 __all__.extend(k for k, v in globals().items()
                if (callable(v) or isinstance(v, type)) and v.__module__ == __name__)

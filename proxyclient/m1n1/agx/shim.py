@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 import errno, ctypes, sys, atexit, os, os.path, mmap
 from construct import *
@@ -81,8 +81,8 @@ class DRMAsahiShim:
     def init_agx(self):
         from m1n1.setup import p, u, iface
 
-        p.pmgr_adt_clocks_enable("/arm-io/gfx-asc")
-        p.pmgr_adt_clocks_enable("/arm-io/sgx")
+        p.pmgr_adt_power_enable("/arm-io/gfx-asc")
+        p.pmgr_adt_power_enable("/arm-io/sgx")
 
         self.agx = agx = AGX(u)
 

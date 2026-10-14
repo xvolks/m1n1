@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "adt.h"
 #include "i2c.h"
@@ -27,7 +27,7 @@ struct i2c_dev {
     uintptr_t base;
 };
 
-i2c_dev_t *i2c_init(const char *adt_node)
+i2c_dev_t *i2c_init(const char *adt_node, bool enable_power)
 {
     int adt_path[8];
     int adt_offset;
@@ -43,7 +43,7 @@ i2c_dev_t *i2c_init(const char *adt_node)
         return NULL;
     }
 
-    if (pmgr_adt_power_enable(adt_node)) {
+    if (enable_power && pmgr_adt_power_enable(adt_node)) {
         printf("i2c: Error enabling power for %s\n", adt_node);
         return NULL;
     }
@@ -117,9 +117,10 @@ static int i2c_xfer_write(i2c_dev_t *dev, u8 addr, u32 start, u32 stop, const u8
     if (!stop)
         return 0;
 
-    if (poll32(dev->base + PASEMI_STATUS, PASEMI_STATUS_XFER_BUSY, 0, 50000)) {
+    if (poll32(dev->base + PASEMI_STATUS, PASEMI_STATUS_XFER_ENDED, PASEMI_STATUS_XFER_ENDED,
+               50000)) {
         printf(
-            "i2c: timeout while waiting for PASEMI_STATUS_XFER_BUSY to clear after write xfer\n");
+            "i2c: timeout while waiting for PASEMI_STATUS_XFER_ENDED to be set after write xfer\n");
         return -1;
     }
 
@@ -151,8 +152,10 @@ int i2c_smbus_read(i2c_dev_t *dev, u8 addr, u8 reg, u8 *bfr, size_t len)
     ret = i2c_xfer_read(dev, bfr, min(len, len_reply));
 
 err:
-    if (poll32(dev->base + PASEMI_STATUS, PASEMI_STATUS_XFER_BUSY, 0, 50000)) {
-        printf("i2c: timeout while waiting for PASEMI_STATUS_XFER_BUSY to clear after read xfer\n");
+    if (poll32(dev->base + PASEMI_STATUS, PASEMI_STATUS_XFER_ENDED, PASEMI_STATUS_XFER_ENDED,
+               50000)) {
+        printf(
+            "i2c: timeout while waiting for PASEMI_STATUS_XFER_ENDED to be set after write xfer\n");
         return -1;
     }
 

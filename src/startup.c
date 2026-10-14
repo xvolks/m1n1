@@ -1,7 +1,8 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "adt.h"
 #include "chickens.h"
+#include "dockchannel_uart.h"
 #include "exception.h"
 #include "firmware.h"
 #include "smp.h"
@@ -134,7 +135,25 @@ void dump_boot_args(struct boot_args *ba)
             break;
     }
     if (!mem_size_actual) {
-        mem_size_actual = ALIGN_UP(ba->phys_base + ba->mem_size - 0x800000000, BIT(30));
+        if (chip_id == T8012) {
+            int anode = adt_path_offset(adt, "/arm-io/mcc");
+
+            /*
+             * For T8012, compute mem_size_actual from the amount of memory channels
+             * enabled as there are large amounts of reserved memory intended as
+             * SSD cache. Cannot use dram-size, it may not exist in older firmwares.
+             * /arm-io/mcc/dcs_num_channels is changed from 4 to 2 by iBoot on 1 GB RAM
+             * models.
+             */
+
+            u32 dcs_num_channels = 0;
+            if (anode > 0 && ADT_GETPROP(adt, anode, "dcs_num_channels", &dcs_num_channels) > 0)
+                mem_size_actual = dcs_num_channels * 0x20000000;
+            else
+                mem_size_actual = 0x40000000;
+        } else {
+            mem_size_actual = ALIGN_UP(ba->phys_base + ba->mem_size - 0x800000000, BIT(30));
+        }
         printf("Correcting mem_size_actual to 0x%lx\n", mem_size_actual);
     }
 }
@@ -177,12 +196,15 @@ void _start_c(void *boot_args, void *base)
         debug_putc('!');
     }
 
+    /* Use Dockchannel as a secondary UART for now and ignore failure */
+    dockchannel_uart_init();
+
     uart_puts("Initializing");
     get_device_info();
 
     printf("CPU init (MIDR: 0x%lx smp_id:0x%x)...\n", mrs(MIDR_EL1), smp_id());
-    const char *type = init_cpu();
-    printf("  CPU: %s\n\n", type);
+    init_cpu();
+    printf("\n");
 
     printf("boot_args at %p\n", boot_args);
 
@@ -203,8 +225,7 @@ void _cpu_reset_c(void *stack)
 
     printf("\n  Stack base: %p\n", stack);
     printf("  MPIDR: 0x%lx\n", mrs(MPIDR_EL1));
-    const char *type = init_cpu();
-    printf("  CPU: %s\n", type);
+    init_cpu();
     printf("  Running in EL%lu\n\n", mrs(CurrentEL) >> 2);
 
     exception_initialize();

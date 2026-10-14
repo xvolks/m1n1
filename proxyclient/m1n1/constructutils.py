@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import inspect, textwrap, json, re, sys, os
 
 from construct import *
@@ -797,12 +797,12 @@ class Ver(Subconstruct):
     try:
         _version = sys.modules["m1n1.constructutils"].Ver._version
     except (KeyError, AttributeError):
-        _version = {"V": os.environ.get("AGX_FWVER", "V12_3"),
+        _version = {"V": os.environ.get("AGX_FWVER", "V13_5"),
                     "G": os.environ.get("AGX_GPU", "G13")}
 
     MATRIX = {
-        "V": ["V12_1", "V12_3", "V12_4", "V13_0B4", "V13_0B5", "V13_0B6", "V13_2", "V13_3", "V13_5B4", "V13_5"],
-        "G": ["G13", "G14", "G14X"],
+        "V": ["V12_1", "V12_3", "V12_4", "V13_0B4", "V13_0B5", "V13_0B6", "V13_2", "V13_3", "V13_5B4", "V13_5", "V14_7"],
+        "G": ["G13", "G14", "G14X", "G15", "G15X"],
     }
 
     def __init__(self, version, subcon):
@@ -890,4 +890,9 @@ def show_struct_trace(log=print):
     for addr, desc in sorted(list(g_struct_trace)):
         log(f"{addr:>#18x}: {desc}")
 
-__all__ = ["ConstructClass", "ConstructValueClass", "Dec", "ROPointer", "show_struct_trace", "ZPadding", "Ver"]
+def Bool(c):
+    return ExprAdapter(c, lambda d, ctx: bool(d & 1), lambda d, ctx: int(d))
+
+bool_ = Bool(Int8ul)
+
+__all__ = ["ConstructClass", "ConstructValueClass", "Dec", "ROPointer", "show_struct_trace", "ZPadding", "Ver", "Bool", "bool_"]

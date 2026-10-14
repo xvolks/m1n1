@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef MEMORY_H
 #define MEMORY_H
@@ -32,6 +32,12 @@
 #define PTE_SH_NS       (0b00 << 8)
 #define PTE_SH_OS       (0b10 << 8)
 #define PTE_SH_IS       (0b11 << 8)
+
+/* table descriptor only, restrict everything below the entry */
+#define PTE_PXNTABLE   BIT(59)
+#define PTE_UXNTABLE   BIT(60)
+#define PTE_APTABLE    GENMASK(62, 61)
+#define PTE_TABLE_PERM (PTE_APTABLE | PTE_UXNTABLE | PTE_PXNTABLE)
 
 #define PERM_RO_EL0  PTE_AP_EL0 | PTE_AP_RO | PTE_PXN | PTE_UXN
 #define PERM_RW_EL0  PTE_AP_EL0 | PTE_PXN | PTE_UXN

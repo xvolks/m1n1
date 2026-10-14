@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "arm_cpu_regs.h"
 #include "types.h"
@@ -18,6 +18,7 @@
 #define AMX_CTL_EN     BIT(63)
 #define AMX_CTL_EN_EL1 BIT(62)
 
+#define SYS_IMP_APL_CNTFRQ_EL0       sys_reg(3, 1, 15, 8, 4)
 #define SYS_IMP_APL_CNTVCT_ALIAS_EL0 sys_reg(3, 4, 15, 10, 6)
 
 /* HID registers */
@@ -293,6 +294,8 @@
 #define HID7_FORCE_NONSPEC_TARGET_TIMER_SEL(x)                        ((ULONG(x)) << 24)
 #define HID7_FORCE_NONSPEC_TARGET_TIMER_SEL_MASK                      (3UL << 24)
 
+#define SYS_IMP_APL_EHID7 sys_reg(3, 0, 15, 7, 1)
+
 #define SYS_IMP_APL_HID8             sys_reg(3, 0, 15, 8, 0)
 #define HID8_DATA_SET_ID0_VALUE(x)   ((ULONG(x)) << 4)
 #define HID8_DATA_SET_ID0_VALUE_MASK GENMASK(7, 4)
@@ -325,6 +328,7 @@
 #define SYS_IMP_APL_HID11_LEGACY      sys_reg(3, 0, 15, 13, 0) /* A7-A9 */
 #define HID11_DISABLE_FILL_C1_BUB_OPT BIT(7)
 #define HID11_ENABLE_FIX_UC_55719865  BIT(15)
+#define HID11_DISABLE_DMP             BIT(30)
 #define HID11_DISABLE_LD_NT_WIDGET    BIT(59)
 
 #define SYS_IMP_APL_EHID11           sys_reg(3, 0, 15, 11, 1)
@@ -339,6 +343,8 @@
 #define HID13_POST_ON_CYCLES_MASK   GENMASK(13, 7)
 #define HID13_PRE_CYCLES(x)         ((ULONG(x)) << 14)
 #define HID13_PRE_CYCLES_MASK       GENMASK(17, 14)
+#define HID13_GROUP0_FF0_DELAY(x)   ((ULONG(x)) << 18)
+#define HID13_GROUP0_FF0_DELAY_MASK GENMASK(25, 18)
 #define HID13_GROUP0_FF1_DELAY(x)   ((ULONG(x)) << 26)
 #define HID13_GROUP0_FF1_DELAY_MASK GENMASK(29, 26)
 #define HID13_GROUP0_FF2_DELAY(x)   ((ULONG(x)) << 30)
@@ -451,6 +457,13 @@
 #define HID27_GROUP3_OFFSET(x)   ((ULONG(x)) << 8)
 #define HID27_GROUP3_OFFSET_MASK (0xffUL << 8)
 
+// Apple Generic Timer Counter Redirect registers
+#define SYS_IMP_APL_AGTCNTRDIR_EL1  sys_reg(3, 1, 15, 1, 5)
+#define SYS_IMP_APL_AGTCNTRDIR_EL12 sys_reg(3, 4, 15, 14, 6)
+#define AGTCNTRDIR_DISABLE          BIT(1)
+#define AGTCNTRDIR_EL0_TRAP_CTL     BIT(0)
+
+// Performance monitor registers
 #define SYS_IMP_APL_PMCR0 sys_reg(3, 1, 15, 0, 0)
 #define PMCR0_CNT_EN_MASK (MASK(8) | GENMASK(33, 32))
 #define PMCR0_IMODE_OFF   (0 << 8)
@@ -586,18 +599,98 @@
 #define ACC_OVRD_SPR_OCLA_SEL                           ((ULONG(x)) << 62)
 #define ACC_OVRD_SPR_OCLA_SEL_MASK                      GENMASK(63, 62)
 
+/* UPMC registers */
 #define SYS_IMP_APL_UPMCR0 sys_reg(3, 7, 15, 0, 4)
-#define UPMCR0_IMODE_OFF   (0 << 16)
-#define UPMCR0_IMODE_AIC   (2 << 16)
-#define UPMCR0_IMODE_HALT  (3 << 16)
-#define UPMCR0_IMODE_FIQ   (4 << 16)
-#define UPMCR0_IMODE_MASK  (7 << 16)
+
+#define UPMCR0_IMODE_OFF  0
+#define UPMCR0_IMODE_AIC  2
+#define UPMCR0_IMODE_HALT 3
+#define UPMCR0_IMODE_FIQ  4
+
+#define UPMCR0_PMI_SHIFT_T8015         12
+#define UPMCR0_IMODE_T8015             GENMASK(10, 8)
+#define UPMCR0_IMODE_CNT_EN_MASK_T8015 MASK(8)
+#define UPMCR0_CNT_MASK_T8015                                                                      \
+    (UPMCR0_IMODE_CNT_EN_MASK_T8015 | (UPMCR0_IMODE_CNT_EN_MASK_T8015 << UPMCR0_PMI_SHIFT_T8015))
+
+#define UPMCR0_PMI_SHIFT_T8020         20
+#define UPMCR0_IMODE_T8020             GENMASK(18, 16)
+#define UPMCR0_IMODE_CNT_EN_MASK_T8020 MASK(16)
+#define UPMCR0_CNT_MASK_T8020                                                                      \
+    (UPMCR0_IMODE_CNT_EN_MASK_T8020 | (UPMCR0_IMODE_CNT_EN_MASK_T8020 << UPMCR0_PMI_SHIFT_T8020))
+
+#define SYS_IMP_APL_UPMECM0_EL1     sys_reg(3, 7, 15, 3, 4)
+#define UPMECM0_EVT_CORE_MASK_CNT_0 GENMASK(15, 0)
+#define UPMECM0_EVT_CORE_MASK_CNT_1 GENMASK(31, 16)
+#define UPMECM0_EVT_CORE_MASK_CNT_2 GENMASK(47, 32)
+#define UPMECM0_EVT_CORE_MASK_CNT_3 GENMASK(63, 48)
+
+#define SYS_IMP_APL_UPMECM1_EL1     sys_reg(3, 7, 15, 4, 4)
+#define UPMECM1_EVT_CORE_MASK_CNT_4 GENMASK(15, 0)
+#define UPMECM1_EVT_CORE_MASK_CNT_5 GENMASK(31, 16)
+#define UPMECM1_EVT_CORE_MASK_CNT_6 GENMASK(47, 32)
+#define UPMECM1_EVT_CORE_MASK_CNT_7 GENMASK(63, 48)
+
+#define SYS_IMP_APL_UPMECM2_EL1      sys_reg(3, 7, 15, 8, 5)
+#define UPMECM2_EVT_CORE_MASK_CNT_8  GENMASK(15, 0)
+#define UPMECM2_EVT_CORE_MASK_CNT_9  GENMASK(31, 16)
+#define UPMECM2_EVT_CORE_MASK_CNT_10 GENMASK(47, 32)
+#define UPMECM2_EVT_CORE_MASK_CNT_11 GENMASK(63, 48)
+
+#define SYS_IMP_APL_UPMECM3_EL1      sys_reg(3, 7, 15, 9, 5)
+#define UPMECM3_EVT_CORE_MASK_CNT_12 GENMASK(15, 0)
+#define UPMECM3_EVT_CORE_MASK_CNT_13 GENMASK(31, 16)
+#define UPMECM3_EVT_CORE_MASK_CNT_14 GENMASK(47, 32)
+#define UPMECM3_EVT_CORE_MASK_CNT_15 GENMASK(63, 48)
+
+#define SYS_IMP_APL_UPMPCM_EL1 sys_reg(3, 7, 15, 5, 4)
+#define UPMPCM_PMI_CORE_MASK   GENMASK(7, 0)
+
+#define SYS_IMP_APL_UPMESR0_EL1 sys_reg(3, 7, 15, 1, 4)
+#define UPMESR0_EVT_CNT_0       GENMASK(7, 0)
+#define UPMESR0_EVT_CNT_1       GENMASK(15, 8)
+#define UPMESR0_EVT_CNT_2       GENMASK(23, 16)
+#define UPMESR0_EVT_CNT_3       GENMASK(31, 24)
+#define UPMESR0_EVT_CNT_4       GENMASK(39, 32)
+#define UPMESR0_EVT_CNT_5       GENMASK(47, 40)
+#define UPMESR0_EVT_CNT_6       GENMASK(55, 48)
+#define UPMESR0_EVT_CNT_7       GENMASK(63, 56)
+
+#define SYS_IMP_APL_UPMESR1_EL1 sys_reg(3, 7, 15, 11, 5)
+#define UPMESR1_EVT_CNT_8       GENMASK(7, 0)
+#define UPMESR1_EVT_CNT_9       GENMASK(15, 8)
+#define UPMESR1_EVT_CNT_10      GENMASK(23, 16)
+#define UPMESR1_EVT_CNT_11      GENMASK(31, 24)
+#define UPMESR1_EVT_CNT_12      GENMASK(39, 32)
+#define UPMESR1_EVT_CNT_13      GENMASK(47, 40)
+#define UPMESR1_EVT_CNT_14      GENMASK(55, 48)
+#define UPMESR1_EVT_CNT_15      GENMASK(63, 56)
+
+#define SYS_IMP_APL_UPMC0  sys_reg(3, 7, 15, 7, 4)
+#define SYS_IMP_APL_UPMC1  sys_reg(3, 7, 15, 8, 4)
+#define SYS_IMP_APL_UPMC2  sys_reg(3, 7, 15, 9, 4)
+#define SYS_IMP_APL_UPMC3  sys_reg(3, 7, 15, 10, 4)
+#define SYS_IMP_APL_UPMC4  sys_reg(3, 7, 15, 11, 4)
+#define SYS_IMP_APL_UPMC5  sys_reg(3, 7, 15, 12, 4)
+#define SYS_IMP_APL_UPMC6  sys_reg(3, 7, 15, 13, 4)
+#define SYS_IMP_APL_UPMC7  sys_reg(3, 7, 15, 14, 4)
+#define SYS_IMP_APL_UPMC8  sys_reg(3, 7, 15, 0, 5)
+#define SYS_IMP_APL_UPMC9  sys_reg(3, 7, 15, 1, 5)
+#define SYS_IMP_APL_UPMC10 sys_reg(3, 7, 15, 2, 5)
+#define SYS_IMP_APL_UPMC11 sys_reg(3, 7, 15, 3, 5)
+#define SYS_IMP_APL_UPMC12 sys_reg(3, 7, 15, 4, 5)
+#define SYS_IMP_APL_UPMC13 sys_reg(3, 7, 15, 5, 5)
+#define SYS_IMP_APL_UPMC14 sys_reg(3, 7, 15, 6, 5)
+#define SYS_IMP_APL_UPMC15 sys_reg(3, 7, 15, 7, 5)
 
 #define SYS_IMP_APL_CORE_NRG_ACC_DAT     sys_reg(3, 7, 15, 1, 1)
 #define SYS_IMP_APL_CORE_SRM_NRG_ACC_DAT sys_reg(3, 7, 15, 3, 1)
 
-#define SYS_IMP_APL_UPMSR sys_reg(3, 7, 15, 6, 4)
-#define UPMSR_IACT        (BIT(0))
+#define SYS_IMP_APL_UPMSR    sys_reg(3, 7, 15, 6, 4)
+#define UPMSR_IACT           BIT(0)
+#define UPMSR_CTI_T8020      BIT(1)
+#define UPMSR_OVERFLOW_T8015 GENMASK(8, 1)
+#define UPMSR_OVERFLOW_T8020 GENMASK(17, 2)
 
 /* SPRR and GXF registers */
 #define SYS_IMP_APL_SPRR_CONFIG_EL1  sys_reg(3, 6, 15, 1, 0)
@@ -627,6 +720,7 @@
 #define SYS_IMP_APL_VBAR_GL1  sys_reg(3, 6, 15, 10, 2)
 #define SYS_IMP_APL_SPSR_GL1  sys_reg(3, 6, 15, 10, 3)
 #define SYS_IMP_APL_ASPSR_GL1 sys_reg(3, 6, 15, 10, 4)
+#define ASPSR_GUARDED         BIT(0)
 #define SYS_IMP_APL_ESR_GL1   sys_reg(3, 6, 15, 10, 5)
 #define SYS_IMP_APL_ELR_GL1   sys_reg(3, 6, 15, 10, 6)
 #define SYS_IMP_APL_FAR_GL1   sys_reg(3, 6, 15, 10, 7)
@@ -648,6 +742,9 @@
 #define SYS_IMP_APL_APCTL_EL1  sys_reg(3, 4, 15, 0, 4)
 #define SYS_IMP_APL_APCTL_EL2  sys_reg(3, 6, 15, 12, 2)
 #define SYS_IMP_APL_APCTL_EL12 sys_reg(3, 6, 15, 15, 0)
+
+/* Hypervisor registers? */
+#define SYS_IMPL_APL_AHCR_EL2 sys_reg(3, 4, 15, 12, 1)
 
 /* VM registers */
 #define SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2 sys_reg(3, 5, 15, 1, 3)
@@ -676,3 +773,71 @@
 #define AIDR_EL1_GXF            BIT(16)
 #define AIDR_EL1_APFLG          BIT(19)
 #define AIDR_EL1_PSRV           BIT(20)
+
+/* M4 CTRR/CTXR registers */
+#define SYS_IMP_APL_CTRR_C_LWR_EL1 sys_reg(3, 0, 11, 0, 0)
+#define SYS_IMP_APL_CTRR_C_UPR_EL1 sys_reg(3, 0, 11, 0, 1)
+#define SYS_IMP_APL_CTRR_D_LWR_EL1 sys_reg(3, 0, 11, 0, 2)
+#define SYS_IMP_APL_CTRR_D_UPR_EL1 sys_reg(3, 0, 11, 0, 3)
+#define SYS_IMP_APL_CTRR_C_CTL_EL1 sys_reg(3, 0, 11, 1, 4)
+#define SYS_IMP_APL_CTRR_D_CTL_EL1 sys_reg(3, 0, 11, 1, 5)
+#define SYS_IMP_APL_CTXR_A_LWR_EL1 sys_reg(3, 0, 11, 2, 2)
+#define SYS_IMP_APL_CTXR_A_UPR_EL1 sys_reg(3, 0, 11, 2, 3)
+#define SYS_IMP_APL_CTXR_B_LWR_EL1 sys_reg(3, 0, 11, 2, 4)
+#define SYS_IMP_APL_CTXR_B_UPR_EL1 sys_reg(3, 0, 11, 2, 5)
+#define SYS_IMP_APL_CTXR_C_LWR_EL1 sys_reg(3, 0, 11, 2, 6)
+#define SYS_IMP_APL_CTXR_C_UPR_EL1 sys_reg(3, 0, 11, 2, 7)
+#define SYS_IMP_APL_CTXR_D_LWR_EL1 sys_reg(3, 0, 11, 3, 0)
+#define SYS_IMP_APL_CTXR_D_UPR_EL1 sys_reg(3, 0, 11, 3, 1)
+#define SYS_IMP_APL_CTXR_A_CTL_EL1 sys_reg(3, 0, 11, 5, 2)
+#define SYS_IMP_APL_CTXR_B_CTL_EL1 sys_reg(3, 0, 11, 5, 3)
+#define SYS_IMP_APL_CTXR_C_CTL_EL1 sys_reg(3, 0, 11, 5, 4)
+#define SYS_IMP_APL_CTXR_D_CTL_EL1 sys_reg(3, 0, 11, 5, 5)
+#define SYS_IMP_APL_CTRR_A_CTL_EL1 sys_reg(3, 4, 15, 2, 5)
+#define SYS_IMP_APL_CTRR_B_CTL_EL1 sys_reg(3, 4, 15, 2, 2)
+
+#define SYS_IMP_APL_CTRR_C_LWR_EL2 sys_reg(3, 0, 11, 1, 0)
+#define SYS_IMP_APL_CTRR_C_UPR_EL2 sys_reg(3, 0, 11, 1, 1)
+#define SYS_IMP_APL_CTRR_D_LWR_EL2 sys_reg(3, 0, 11, 1, 2)
+#define SYS_IMP_APL_CTRR_D_UPR_EL2 sys_reg(3, 0, 11, 1, 3)
+
+#define SYS_IMP_APL_CTRR_C_LWR_EL12 sys_reg(3, 0, 11, 0, 4)
+#define SYS_IMP_APL_CTRR_C_UPR_EL12 sys_reg(3, 0, 11, 0, 5)
+#define SYS_IMP_APL_CTRR_D_LWR_EL12 sys_reg(3, 0, 11, 0, 6)
+#define SYS_IMP_APL_CTRR_D_UPR_EL12 sys_reg(3, 0, 11, 0, 7)
+#define SYS_IMP_APL_CTRR_C_CTL_EL12 sys_reg(3, 0, 11, 1, 6)
+#define SYS_IMP_APL_CTRR_D_CTL_EL12 sys_reg(3, 0, 11, 1, 7)
+#define SYS_IMP_APL_CTXR_A_LWR_EL12 sys_reg(3, 0, 11, 3, 2)
+#define SYS_IMP_APL_CTXR_A_UPR_EL12 sys_reg(3, 0, 11, 3, 3)
+#define SYS_IMP_APL_CTXR_B_LWR_EL12 sys_reg(3, 0, 11, 3, 4)
+#define SYS_IMP_APL_CTXR_B_UPR_EL12 sys_reg(3, 0, 11, 3, 5)
+#define SYS_IMP_APL_CTXR_C_LWR_EL12 sys_reg(3, 0, 11, 3, 6)
+#define SYS_IMP_APL_CTXR_C_UPR_EL12 sys_reg(3, 0, 11, 3, 7)
+#define SYS_IMP_APL_CTXR_D_LWR_EL12 sys_reg(3, 0, 11, 4, 0)
+#define SYS_IMP_APL_CTXR_D_UPR_EL12 sys_reg(3, 0, 11, 4, 1)
+#define SYS_IMP_APL_CTXR_A_CTL_EL12 sys_reg(3, 0, 11, 5, 6)
+#define SYS_IMP_APL_CTXR_B_CTL_EL12 sys_reg(3, 0, 11, 5, 7)
+#define SYS_IMP_APL_CTXR_C_CTL_EL12 sys_reg(3, 0, 11, 6, 0)
+#define SYS_IMP_APL_CTXR_D_CTL_EL12 sys_reg(3, 0, 11, 6, 1)
+
+/* SPTM calls these per-cluster registers */
+#define SYS_IMP_APL_ACC_CTRR_C_LWR_EL2 sys_reg(3, 0, 11, 6, 6)
+#define SYS_IMP_APL_ACC_CTRR_C_UPR_EL2 sys_reg(3, 0, 11, 6, 7)
+#define SYS_IMP_APL_ACC_CTRR_D_LWR_EL2 sys_reg(3, 0, 11, 7, 0)
+#define SYS_IMP_APL_ACC_CTRR_D_UPR_EL2 sys_reg(3, 0, 11, 7, 1)
+#define SYS_IMP_APL_ACC_CTXR_A_LWR_EL2 sys_reg(3, 0, 11, 7, 2)
+#define SYS_IMP_APL_ACC_CTXR_A_UPR_EL2 sys_reg(3, 0, 11, 7, 3)
+#define SYS_IMP_APL_ACC_CTXR_B_LWR_EL2 sys_reg(3, 0, 11, 7, 4)
+#define SYS_IMP_APL_ACC_CTXR_B_UPR_EL2 sys_reg(3, 0, 11, 7, 5)
+#define SYS_IMP_APL_ACC_CTXR_C_LWR_EL2 sys_reg(3, 0, 11, 7, 6)
+#define SYS_IMP_APL_ACC_CTXR_C_UPR_EL2 sys_reg(3, 0, 11, 7, 7)
+#define SYS_IMP_APL_ACC_CTXR_D_LWR_EL2 sys_reg(3, 0, 11, 8, 0)
+#define SYS_IMP_APL_ACC_CTXR_D_UPR_EL2 sys_reg(3, 0, 11, 8, 1)
+#define SYS_IMP_APL_ACC_CTRR_C_CTL_EL2 sys_reg(3, 0, 11, 8, 2)
+#define SYS_IMP_APL_ACC_CTRR_D_CTL_EL2 sys_reg(3, 0, 11, 8, 3)
+#define SYS_IMP_APL_ACC_CTXR_A_CTL_EL2 sys_reg(3, 0, 11, 8, 4)
+#define SYS_IMP_APL_ACC_CTXR_B_CTL_EL2 sys_reg(3, 0, 11, 8, 5)
+#define SYS_IMP_APL_ACC_CTXR_C_CTL_EL2 sys_reg(3, 0, 11, 8, 6)
+#define SYS_IMP_APL_ACC_CTXR_D_CTL_EL2 sys_reg(3, 0, 11, 8, 7)
+#define SYS_IMP_APL_ACC_CTRR_A_CTL_EL2 sys_reg(3, 4, 15, 11, 4)
+#define SYS_IMP_APL_ACC_CTRR_B_CTL_EL2 sys_reg(3, 4, 15, 11, 5)

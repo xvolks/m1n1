@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+import array
+
+from .. import sysreg
+from ..sysreg import sysreg_encode
+
+__all__ = ["patch_text_sprr_emu", "HV_VREGS"]
+
+# Must be kept in sync with enum hv_vreg in src/hv/hv_sprr.h (vreg_id = index).
+HV_VREGS = [
+    sysreg.SPRR_CONFIG_EL1,
+    sysreg.GXF_CONFIG_EL1,
+    sysreg.GXF_STATUS_EL1,
+    sysreg.GXF_ENTRY_EL1,
+    sysreg.GXF_PABENTRY_EL1,
+    sysreg.SPRR_UPERM_EL0,
+    sysreg.SPRR_PPERM_EL1,
+    sysreg.TPIDR_GL1,
+    sysreg.VBAR_GL1,
+    sysreg.SPSR_GL1,
+    sysreg.ASPSR_GL1,
+    sysreg.ESR_GL1,
+    sysreg.ELR_GL1,
+    sysreg.FAR_GL1,
+    sysreg.AFSR1_GL1,
+    sysreg.ASPSR_EL1,
+    sysreg.SPRR_UMPRR_EL1,
+    sysreg.TTBR0_EL1,
+    sysreg.TTBR1_EL1,
+    sysreg.TCR_EL1,
+    sysreg.SCTLR_EL1,
+    sysreg.SPRR_PMPRR_EL1,
+    sysreg.SPRR_AMRANGE_EL1,
+    sysreg.SPRR_PPERM_SH1_EL1,
+    sysreg.SPRR_PPERM_SH2_EL1,
+    sysreg.SPRR_PPERM_SH3_EL1,
+    sysreg.SPRR_UPERM_SH1_EL1,
+    sysreg.SPRR_UPERM_SH2_EL1,
+    sysreg.SPRR_UPERM_SH3_EL1,
+    sysreg.VBAR_EL1,
+    sysreg.ELR_EL1,
+    sysreg.SPSR_EL1,
+    sysreg.ESR_EL1,
+    sysreg.FAR_EL1,
+    sysreg.AFSR1_EL1,
+]
+
+GENTER = 0x00201420
+GEXIT = 0x00201400
+
+HVC_SYSREG_FLAG = 0x8000
+
+
+def _hvc(imm):
+    return 0xd4000002 | (imm << 5)
+
+
+# MSR/MRS opcode (Rt masked) -> (vreg_id, read)
+_SYSREG = {sysreg_encode(enc, rd): (i, rd) for i, enc in enumerate(HV_VREGS) for rd in (0, 1)}
+
+
+def patch_text_sprr_emu(data, log=None):
+    a = array.array("I", data)
+    genter = gexit = sysreg_ = 0
+
+    for i, w in enumerate(a):
+        if w >> 16 == GENTER >> 16:
+            if w & 0xfffffff0 == GENTER:  # genter #imm; bit5 set distinguishes gexit
+                a[i] = _hvc(w & 0xffff)
+                genter += 1
+            elif w == GEXIT:
+                a[i] = _hvc(GEXIT & 0xffff)
+                gexit += 1
+            continue
+        if w >> 24 != 0xd5:
+            continue
+        hit = _SYSREG.get(w & ~0x1f)
+        if hit is not None:
+            vreg, rd = hit
+            a[i] = _hvc(HVC_SYSREG_FLAG | (vreg << 6) | (rd << 5) | (w & 0x1f))
+            sysreg_ += 1
+
+    if log:
+        log(f"  {genter} genter, {gexit} gexit, {sysreg_} sysreg patched")
+
+    return a.tobytes()

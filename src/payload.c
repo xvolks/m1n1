@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "../build/build_cfg.h"
 #include "../build/build_tag.h"
@@ -11,6 +11,7 @@
 #include "display.h"
 #include "heapblock.h"
 #include "kboot.h"
+#include "mitigations.h"
 #include "smp.h"
 #include "utils.h"
 
@@ -32,6 +33,11 @@ static const u8 initramfs_magic[] = {
     'm', '1', 'n', '1', '_', 'i', 'n',
     'i', 't', 'r', 'a', 'm', 'f', 's'}; // followed by size as little endian uint32_t
 static const u8 empty[] = {0, 0, 0, 0};
+
+// custom logo is RGBA with 256x256 retina logo followed by half resolution
+static const u8 custom_logo_magic[] = {'m', '1', 'n', '1', '_', 'l', 'o', 'g',
+                                       'o', '_', '2', '5', '6', '1', '2', '8'};
+#define CUSTOM_LOGO_SIZE (4 * ((256 * 256) + (128 * 128)))
 
 static char expect_compatible[256];
 static struct kernel_header *kernel = NULL;
@@ -162,7 +168,7 @@ static void *load_kernel(void *p, size_t size)
 #ifdef CHAINLOADING
 static size_t chosen_cnt = 1;
 static char *chosen[MAX_CHOSEN_VARS] = {
-    "chosen.m1n1-stage1-version=" BUILD_TAG,
+    "chosen.asahi,m1n1-stage1-version=" BUILD_TAG,
 };
 #else
 static size_t chosen_cnt = 0;
@@ -195,6 +201,8 @@ static bool check_var(u8 **p)
         chainload_spec = val;
     } else if (IS_VAR("display=")) {
         display_configure(val);
+    } else if (IS_VAR("mitigations=")) {
+        mitigations_configure(val);
     } else if (IS_VAR("tso=")) {
         enable_tso = val[0] == '1';
     } else {
@@ -238,6 +246,10 @@ static void *load_one_payload(void *start, size_t size)
         printf("Found a m1n1 initramfs payload at %p, 0x%x bytes\n", p, size);
         p += sizeof(initramfs_magic) + 4;
         return load_cpio(p, size);
+    } else if (!memcmp(p, custom_logo_magic, sizeof(custom_logo_magic))) {
+        printf("Found a m1n1 custom logo payload at %p, skipping 0x%lx bytes\n", p,
+               sizeof(custom_logo_magic) + CUSTOM_LOGO_SIZE);
+        return p + sizeof(custom_logo_magic) + CUSTOM_LOGO_SIZE;
     } else if (check_var(&p)) {
         return p;
     } else if (!memcmp(p, empty, sizeof empty) ||
@@ -257,6 +269,25 @@ void do_enable_tso(void)
     msr(ACTLR_EL1, actlr);
 }
 
+bool payload_logo(void **custom_128, void **custom_256)
+{
+    void *p = _payload_start;
+
+    *custom_128 = NULL;
+    *custom_256 = NULL;
+
+    if (!memcmp(p, custom_logo_magic, sizeof(custom_logo_magic))) {
+        void *data = p + sizeof(custom_logo_magic);
+        printf("Found a m1n1 custom logo payload at %p\n", p);
+        *custom_256 = data;
+        *custom_128 = data + 4 * 256 * 256;
+
+        return true;
+    }
+
+    return false;
+}
+
 int payload_run(void)
 {
     const char *target = adt_getprop(adt, 0, "target-type", NULL);
@@ -273,8 +304,6 @@ int payload_run(void)
         return -1;
     }
 
-    chosen_cnt = 0;
-
     void *p = _payload_start;
 
     while (p)
@@ -287,6 +316,7 @@ int payload_run(void)
     if (kernel && fdt) {
         cpufreq_init();
         smp_start_secondaries();
+        mitigations_perform();
         if (enable_tso) {
 
             do_enable_tso();
@@ -303,10 +333,12 @@ int payload_run(void)
 
         for (size_t i = 0; i < chosen_cnt; i++) {
             char *val = memchr(chosen[i], '=', MAX_VAR_NAME + 1);
+            char var[MAX_VAR_NAME + 1];
 
             assert(val);
-            val[0] = 0; // Terminate var name
-            if (kboot_set_chosen(chosen[i] + 7, val + 1) < 0)
+            memcpy(var, chosen[i], val - chosen[i]);
+            var[val - chosen[i]] = 0; // Terminate var name
+            if (kboot_set_chosen(var + 7, val + 1) < 0)
                 printf("Failed to kboot set %s='%s'\n", chosen[i], val);
         }
 

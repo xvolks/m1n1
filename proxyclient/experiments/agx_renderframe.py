@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 import sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -17,8 +17,8 @@ from m1n1.agx.render import *
 
 from m1n1 import asm
 
-p.pmgr_adt_clocks_enable("/arm-io/gfx-asc")
-p.pmgr_adt_clocks_enable("/arm-io/sgx")
+p.pmgr_adt_power_enable("/arm-io/gfx-asc")
+p.pmgr_adt_power_enable("/arm-io/sgx")
 
 agx = AGX(u)
 mon = RegMonitor(u, ascii=True, bufsize=0x8000000)

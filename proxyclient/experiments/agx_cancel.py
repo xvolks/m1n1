@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 import sys, pathlib, time
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -21,8 +21,8 @@ from m1n1.gpiola import GPIOLogicAnalyzer
 
 analyzer_cpu = 1
 
-p.pmgr_adt_clocks_enable("/arm-io/gfx-asc")
-p.pmgr_adt_clocks_enable("/arm-io/sgx")
+p.pmgr_adt_power_enable("/arm-io/gfx-asc")
+p.pmgr_adt_power_enable("/arm-io/sgx")
 p.smp_start_secondaries()
 p.mmu_init_secondary(analyzer_cpu)
 iface.dev.timeout = 42

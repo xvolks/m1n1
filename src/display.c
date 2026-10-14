@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "../build/build_cfg.h"
 
@@ -30,6 +30,7 @@ static dcp_dev_t *dcp;
 static dcp_iboot_if_t *iboot;
 static u64 fb_dva;
 static u64 fb_size;
+bool has_dcp;
 bool display_is_external;
 bool display_is_dptx;
 bool display_needs_power_cycle;
@@ -244,14 +245,23 @@ static uintptr_t display_map_fb(uintptr_t iova, u64 paddr, u64 size)
 
 const display_config_t *display_get_config(void)
 {
+    const display_config_t *conf = NULL;
+
     if (adt_is_compatible(adt, 0, "J473AP"))
-        return &display_config_m2;
+        conf = &display_config_m2;
     else if (adt_is_compatible(adt, 0, "J474sAP") || adt_is_compatible(adt, 0, "J475cAP"))
-        return &display_config_m2_pro_max;
+        conf = &display_config_m2_pro_max;
     else if (adt_is_compatible(adt, 0, "J180dAP") || adt_is_compatible(adt, 0, "J475dAP"))
-        return &display_config_m2_ultra;
+        conf = &display_config_m2_ultra;
     else
-        return &display_config_m1;
+        conf = &display_config_m1;
+
+    has_dcp = adt_path_offset(adt, conf->dcp) > 0;
+    if (!has_dcp) {
+        return NULL;
+    }
+
+    return conf;
 }
 
 int display_start_dcp(void)
@@ -264,12 +274,12 @@ int display_start_dcp(void)
     return 0;
 #endif
 
+    const display_config_t *disp_cfg = display_get_config();
+
     if (!has_dcp) {
-        printf("display: DCP not present\n");
+        printf("display: device has no DCP. Display will not be initialised.\n");
         return -1;
     }
-
-    const display_config_t *disp_cfg = display_get_config();
 
     display_is_dptx = !!disp_cfg->dptx_phy[0];
 
@@ -284,7 +294,7 @@ int display_start_dcp(void)
     if (display_get_vram(&pa, &size)) {
         // use a safe fb_size
         fb_size = cur_boot_args.video.stride * cur_boot_args.video.height *
-                  ((cur_boot_args.video.depth + 7) / 8);
+                  DIV_ROUND_UP(cur_boot_args.video.depth, 8);
     } else {
         fb_size = size;
     }
@@ -392,6 +402,12 @@ int display_configure(const char *config)
     return 0;
 #endif
 
+    if (os_firmware.version >= V15_0B1) {
+        printf("display: Unsupported firmware version %s, skipping configuration\n",
+               os_firmware.string);
+        return 0;
+    }
+
     display_parse_mode(config, &want, &opts);
 
     u64 start_time = get_ticks();
@@ -487,7 +503,7 @@ int display_configure(const char *config)
     u64 tmp_dva = 0;
 
     size_t size =
-        ALIGN_UP(tbest.width * tbest.height * ((cbest.bpp + 7) / 8) + 24 * SZ_16K, SZ_16K);
+        ALIGN_UP(tbest.width * tbest.height * DIV_ROUND_UP(cbest.bpp, 8) + 24 * SZ_16K, SZ_16K);
 
     if (fb_size < size) {
         printf("display: current framebuffer is too small for new mode\n");
@@ -516,7 +532,7 @@ int display_configure(const char *config)
             return ret;
 
         /* wait for swap durations + 1ms */
-        u32 delay = (((1000 << 16) + tbest.fps - 1) / tbest.fps) + 1;
+        u32 delay = DIV_ROUND_UP(1000 << 16, tbest.fps) + 1;
         mdelay(delay);
         dart_unmap(dcp->dart_disp, fb_dva, fb_size);
         dart_unmap(dcp->dart_dcp, fb_dva, fb_size);
@@ -606,6 +622,8 @@ int display_init(void)
         disp_path = "/arm-io/disp0";
 
     bool has_notch = false;
+    UNUSED(has_notch);
+
     int product = adt_path_offset(adt, "/product");
     if (product < 0) {
         printf("/product node not found!\n");
@@ -640,7 +658,7 @@ int display_init(void)
         fb_clear_direct(); // Old m1n1 stage1 ends up with an ugly logo situation, clear it.
         return display_configure(NULL);
 #ifndef CHAINLOADING
-    } else if (!has_notch && firmware_sfw_in_range(V15_0B1, FW_MAX) &&
+    } else if (!has_notch && chip_id <= T8112 && firmware_sfw_in_range(V15_0B1, FW_MAX) &&
                os_firmware.version < V15_0B1) {
         printf("display: Internal display on t8103 or t8112 with Sequoia SFW, power cycling\n");
         display_needs_power_cycle = true;
@@ -655,6 +673,10 @@ int display_init(void)
 
 void display_shutdown(dcp_shutdown_mode mode)
 {
+    /* We have no DCP, so just exit */
+    if (!has_dcp)
+        return;
+
     if (iboot) {
         dcp_ib_shutdown(iboot);
         switch (mode) {

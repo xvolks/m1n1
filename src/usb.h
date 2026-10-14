@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef USB_H
 #define USB_H
@@ -14,5 +14,7 @@ void usb_hpm_restore_irqs(bool force);
 void usb_iodev_init(void);
 void usb_iodev_shutdown(void);
 void usb_iodev_vuart_setup(iodev_id_t iodev);
+
+int usb_enable_debugusb(void);
 
 #endif

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "pmgr.h"
 #include "adt.h"
@@ -36,9 +36,14 @@ struct pmgr_device {
     u8 unk3[2];
     u8 addr_offset;
     u8 psreg_idx;
-    u8 unk4[14];
+    u8 unk4[4];
+    struct {
+        u32 offset : 24;
+        u32 group : 8;
+    } group_and_offset;
+    u8 unk5[6];
     u16 id2;
-    u8 unk5[4];
+    u8 unk6[4];
     const char name[0x10];
 } PACKED;
 
@@ -47,6 +52,9 @@ static int pmgr_initialized = 0;
 static int pmgr_path[8];
 static int pmgr_offset;
 static int pmgr_dies;
+static const char pmgr_name_t8103[] = "/arm-io/pmgr";
+static const char pmgr_name_t8152[] = "/arm-io/pmgr-child";
+const char *pmgr_name = pmgr_name_t8103;
 
 static const u32 *pmgr_ps_regs = NULL;
 static u32 pmgr_ps_regs_len = 0;
@@ -55,6 +63,7 @@ static const struct pmgr_device *pmgr_devices = NULL;
 static u32 pmgr_devices_len = 0;
 
 static bool pmgr_u8id = false;
+static bool pmgr_use_group_and_offset = false;
 
 static uintptr_t pmgr_get_psreg(u8 idx)
 {
@@ -68,7 +77,7 @@ static uintptr_t pmgr_get_psreg(u8 idx)
 
     u64 pmgr_reg;
     if (adt_get_reg(adt, pmgr_path, "reg", reg_idx, &pmgr_reg, NULL) < 0) {
-        printf("pmgr: Error getting /arm-io/pmgr regs\n");
+        printf("pmgr: Error getting %s regs\n", pmgr_name);
         return 0;
     }
 
@@ -77,7 +86,8 @@ static uintptr_t pmgr_get_psreg(u8 idx)
 
 int pmgr_set_mode(uintptr_t addr, u8 target_mode)
 {
-    mask32(addr, PMGR_PS_TARGET, FIELD_PREP(PMGR_PS_TARGET, target_mode));
+    mask32(addr, PMGR_AUTO_ENABLE | PMGR_WAS_CLKGATED | PMGR_WAS_PWRGATED | PMGR_PS_TARGET,
+           FIELD_PREP(PMGR_PS_TARGET, target_mode));
     if (poll32(addr, PMGR_PS_ACTUAL, FIELD_PREP(PMGR_PS_ACTUAL, target_mode), PMGR_POLL_TIMEOUT) <
         0) {
         printf("pmgr: timeout while trying to set mode %x for device at 0x%lx: %x\n", target_mode,
@@ -112,13 +122,21 @@ static int pmgr_find_device(u16 id, const struct pmgr_device **device)
 
 static uintptr_t pmgr_device_get_addr(u8 die, const struct pmgr_device *device)
 {
-    uintptr_t addr = pmgr_get_psreg(device->psreg_idx);
+    uintptr_t addr;
+    if (pmgr_use_group_and_offset)
+        addr = pmgr_get_psreg(device->group_and_offset.group);
+    else
+        addr = pmgr_get_psreg(device->psreg_idx);
     if (addr == 0)
         return 0;
 
     addr += PMGR_DIE_OFFSET * die;
 
-    addr += (device->addr_offset << 3);
+    if (pmgr_use_group_and_offset)
+        addr += device->group_and_offset.offset;
+    else
+        addr += (device->addr_offset << 3);
+
     return addr;
 }
 
@@ -341,6 +359,44 @@ int pmgr_reset(int die, const char *name)
     return pmgr_reset_device(die, dev);
 }
 
+int pmgr_power_on(int die, const char *name)
+{
+    const struct pmgr_device *dev = NULL;
+
+    for (unsigned int i = 0; i < pmgr_devices_len; ++i) {
+        if (strncmp(pmgr_devices[i].name, name, 0x10) == 0) {
+            dev = &pmgr_devices[i];
+            break;
+        }
+    }
+
+    if (!dev)
+        return -1;
+
+    uintptr_t addr = pmgr_device_get_addr(die, dev);
+
+    if (!addr)
+        return -1;
+
+    return pmgr_set_mode(addr, PMGR_PS_ACTIVE);
+}
+
+int pmgr_adt_path_offset_trace(const void *adt_ptr, int *path)
+{
+    int offset = adt_path_offset_trace(adt_ptr, pmgr_name, path);
+    if (offset < 0)
+        return offset;
+
+    /* M6 and hopefully later SoC moved the used pmgr functionality to "/arm-io/pmgr-child"
+     * and have a generic looking "pmgr2,arch" as compatible in "/arm-io/pmgr".
+     */
+    if (!adt_is_compatible(adt, offset, "pmgr2,arch"))
+        return offset;
+    pmgr_name = pmgr_name_t8152;
+
+    return adt_path_offset_trace(adt, pmgr_name, path);
+}
+
 int pmgr_init(void)
 {
     int node = adt_path_offset(adt, "/arm-io");
@@ -351,21 +407,25 @@ int pmgr_init(void)
     if (ADT_GETPROP(adt, node, "die-count", &pmgr_dies) < 0)
         pmgr_dies = 1;
 
-    pmgr_offset = adt_path_offset_trace(adt, "/arm-io/pmgr", pmgr_path);
+    pmgr_offset = pmgr_adt_path_offset_trace(adt, pmgr_path);
     if (pmgr_offset < 0) {
-        printf("pmgr: Error getting /arm-io/pmgr node\n");
+        printf("pmgr: Error getting %s node\n", pmgr_name);
         return -1;
     }
 
     pmgr_ps_regs = adt_getprop(adt, pmgr_offset, "ps-regs", &pmgr_ps_regs_len);
     if (pmgr_ps_regs == NULL || pmgr_ps_regs_len == 0) {
-        printf("pmgr: Error getting /arm-io/pmgr ps-regs\n.");
-        return -1;
+        pmgr_use_group_and_offset = true;
+        pmgr_ps_regs = adt_getprop(adt, pmgr_offset, "ps-groups", &pmgr_ps_regs_len);
+        if (pmgr_ps_regs == NULL || pmgr_ps_regs_len == 0) {
+            printf("pmgr: Error getting %s ps-regs\n.", pmgr_name);
+            return -1;
+        }
     }
 
     pmgr_devices = adt_getprop(adt, pmgr_offset, "devices", &pmgr_devices_len);
     if (pmgr_devices == NULL || pmgr_devices_len == 0) {
-        printf("pmgr: Error getting /arm-io/pmgr devices.\n");
+        printf("pmgr: Error getting %s devices.\n", pmgr_name);
         return -1;
     }
 
@@ -442,4 +502,23 @@ u32 pmgr_get_feature(const char *name)
         return 0;
 
     return val;
+}
+
+int pmgr_set_voltage_ctl(uint32_t offset)
+{
+    u64 pmgr_reg;
+
+    if (!pmgr_initialized) {
+        printf("pmgr: pmgr_set_voltage_ctl() called before successful pmgr_init()\n");
+        return -1;
+    }
+
+    if (adt_get_reg(adt, pmgr_path, "reg", 0, &pmgr_reg, NULL) < 0) {
+        printf("Error getting /arm-io/pmgr regs\n");
+        return -1;
+    }
+
+    write32(pmgr_reg + offset, 1);
+
+    return 0;
 }

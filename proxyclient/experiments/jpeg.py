@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -337,8 +337,8 @@ else:
     print(f"Using size {output_mem_sz:08X} for output data")
 
 # Turn on the JPEG block
-p.pmgr_adt_clocks_enable(f'/arm-io/dart-{args.which_jpeg}')
-p.pmgr_adt_clocks_enable(f'/arm-io/{args.which_jpeg}')
+p.pmgr_adt_power_enable(f'/arm-io/dart-{args.which_jpeg}')
+p.pmgr_adt_power_enable(f'/arm-io/{args.which_jpeg}')
 
 dart = DART.from_adt(u, f'/arm-io/dart-{args.which_jpeg}')
 dart.initialize()

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import os, struct, sys, time
 
 from .hv import HV
@@ -25,8 +25,6 @@ mon = RegMonitor(u)
 hv = HV(iface, p, u)
 
 fb = u.ba.video.base
-
-PMU(u).reset_panic_counter()
 
 print(f"m1n1 base: 0x{u.base:x}")
 

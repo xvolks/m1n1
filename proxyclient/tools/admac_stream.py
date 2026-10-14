@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import sys, pathlib
 import time
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -30,7 +30,7 @@ for node in u.adt["/arm-io"]:
         print(f"Found {path}", file=sys.stderr)
         if "clock-gates" in node._properties:
             print(f"Enabling {path}", file=sys.stderr)
-            p.pmgr_adt_clocks_enable(path)
+            p.pmgr_adt_power_enable(path)
         break
 
 if path is None:
@@ -50,10 +50,10 @@ dart_idx = mapper.reg
 
 if "clock-gates" in u.adt[dart_path]._properties:
     print(f"Enabling {dart_path}", file=sys.stderr)
-    p.pmgr_adt_clocks_enable(path)
+    p.pmgr_adt_power_enable(path)
 
 dart = DART.from_adt(u, dart_path)
-admac = ADMAC(u, admac_node.get_reg(0)[0], dart,
+admac = ADMAC(u, path, dart,
               dart_stream=dart_idx, debug=args.verbose)
 
 chan = admac.chans[args.chan]

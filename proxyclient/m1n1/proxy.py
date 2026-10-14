@@ -1,10 +1,11 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import platform, os, sys, struct, serial, time
 from construct import *
 from enum import IntEnum, IntFlag
 from serial.tools.miniterm import Miniterm
 
 from .utils import *
+from .constructutils import bool_
 from .sysreg import *
 
 __all__ = ["REGION_RWX_EL0", "REGION_RW_EL0", "REGION_RX_EL1"]
@@ -65,6 +66,11 @@ class EXC_RET(IntEnum):
     HANDLED = 2
     EXIT_GUEST = 3
     STEP = 4
+
+# Must match enum hv_sptm_mode in src/hv/hv.h
+class SPTM_MODE(IntEnum):
+    SPTM_NONE = 0
+    SPTM_EMULATION = 1
 
 class DCP_SHUTDOWN_MODE(IntEnum):
     QUIESCED = 0
@@ -149,6 +155,15 @@ class UartInterface(Reloadable):
             self.devpath = device
             self.baudrate = baud
 
+            # wait for it to come back
+            if os.environ.get("M1N1WAIT", 0) and not os.path.exists(self.devpath):
+                print("Waiting for %s to appear.." % self.devpath)
+                for n in range(100): # 10s
+                    time.sleep(0.1)
+                    if os.path.exists(self.devpath):
+                        break
+                time.sleep(0.1) # wait for udev to settle (avoid permissions issues)
+
             device = Serial(self.devpath, baud)
 
         self.dev = device
@@ -156,6 +171,7 @@ class UartInterface(Reloadable):
         self.dev.flushOutput()
         self.dev.flushInput()
         self.pted = False
+        self.tty_log = None
         #d = self.dev.read(1)
         #while d != "":
             #d = self.dev.read(1)
@@ -206,11 +222,16 @@ class UartInterface(Reloadable):
         for c in s:
             if not self.pted:
                 sys.stdout.write("TTY> ")
+                if self.tty_log:
+                    self.tty_log.write("TTY> ")
                 self.pted = True
             if c == 10:
                 self.pted = False
             sys.stdout.write(chr(c))
             sys.stdout.flush()
+            if self.tty_log:
+                self.tty_log.write(chr(c))
+                self.tty_log.flush()
 
     def ttymode(self, dev=None):
         if dev is None:
@@ -333,7 +354,7 @@ class UartInterface(Reloadable):
             self.dev.close()
             print("Waiting for reconnection... ", end="")
             sys.stdout.flush()
-            for i in range(100):
+            for i in range(200):
                 print(".", end="")
                 sys.stdout.flush()
                 try:
@@ -444,16 +465,17 @@ class AlignmentError(Exception):
 
 class IODEV(IntEnum):
     UART = 0
-    FB = 1
-    USB_VUART = 2
-    USB0 = 3
-    USB1 = 4
-    USB2 = 5
-    USB3 = 6
-    USB4 = 7
-    USB5 = 8
-    USB6 = 9
-    USB7 = 10
+    DOCKCHANNEL_UART = 1
+    FB = 2
+    USB_VUART = 3
+    USB0 = 4
+    USB1 = 5
+    USB2 = 6
+    USB3 = 7
+    USB4 = 8
+    USB5 = 9
+    USB6 = 10
+    USB7 = 11
 
 class USAGE(IntFlag):
     CONSOLE = (1 << 0)
@@ -470,8 +492,37 @@ REGION_RWX_EL0 = 0x80000000000
 REGION_RW_EL0 = 0xa0000000000
 REGION_RX_EL1 = 0xc0000000000
 
+SleepMode = "SleepMode" / Enum(Int32ul,
+    SLEEP_NONE = 0,
+    SLEEP_LEGACY = 1,
+    SLEEP_GLOBAL = 2,
+)
+
+UncoreVersion = "UncoreVersion" / Enum(Int32ul,
+    UNCORE_NONE = 0,
+    UNCORE_V1 = 1,
+    UNCORE_V2 = 2,
+)
+
+CPUFeatures = Struct(
+    "sleep_mode" / SleepMode,
+    "uncore_version" / UncoreVersion,
+    "disable_dc_mva" / bool_,
+    "acc_cfg" / bool_,
+    "apple_sysregs_unlocked" / bool_,
+    "workaround_cyclone_cache" / bool_,
+    "nex_powergating" / bool_,
+    "fast_ipi" / bool_,
+    "mmu_sprr" / bool_,
+    "siq_cfg" / bool_,
+    "amx" / bool_,
+    "actlr_el2" / bool_,
+    "counter_redirect" / bool_,
+    "padding" / Bytes(1),
+)
+
 # Uses UartInterface.proxyreq() to send requests to M1N1 and process
-# reponses sent back.
+# responses sent back.
 class M1N1Proxy(Reloadable):
     S_OK = 0
     S_BADCMD = -1
@@ -495,6 +546,8 @@ class M1N1Proxy(Reloadable):
     P_REBOOT = 0x010
     P_SLEEP = 0x011
     P_EL3_CALL = 0x012
+    P_GET_CHIPID = 0x013
+    P_GET_CPU_FEATURES = 0x014
 
     P_WRITE64 = 0x100
     P_WRITE32 = 0x101
@@ -565,17 +618,19 @@ class M1N1Proxy(Reloadable):
     P_HEAPBLOCK_ALLOC = 0x600
     P_MALLOC = 0x601
     P_MEMALIGN = 0x602
-    P_FREE = 0x602
+    P_FREE = 0x603
+    P_HEAPBLOCK_SET_LIMIT = 0x604
 
     P_KBOOT_BOOT = 0x700
     P_KBOOT_SET_CHOSEN = 0x701
     P_KBOOT_SET_INITRD = 0x702
     P_KBOOT_PREPARE_DT = 0x703
+    P_KBOOT_SET_UBOOT = 0x704
 
-    P_PMGR_CLOCK_ENABLE = 0x800
-    P_PMGR_CLOCK_DISABLE = 0x801
-    P_PMGR_ADT_CLOCKS_ENABLE = 0x802
-    P_PMGR_ADT_CLOCKS_DISABLE = 0x803
+    P_PMGR_POWER_ENABLE = 0x800
+    P_PMGR_POWER_DISABLE = 0x801
+    P_PMGR_ADT_POWER_ENABLE = 0x802
+    P_PMGR_ADT_POWER_DISABLE = 0x803
     P_PMGR_RESET = 0x804
 
     P_IODEV_SET_USAGE = 0x900
@@ -611,6 +666,7 @@ class M1N1Proxy(Reloadable):
     P_VIRTIO_PUT_BUFFER = 0xc0e
     P_HV_EXIT_CPU = 0xc0f
     P_HV_ADD_TIME = 0xc10
+    P_HV_SPTM_SET_MODE = 0xc11
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -642,6 +698,9 @@ class M1N1Proxy(Reloadable):
     P_DAPF_INIT = 0x1201
 
     P_CPUFREQ_INIT = 0x1300
+
+    P_READ_GIGALOCKER = 0x1400
+    P_FREE_GIGALOCKER = 0x1401
 
     def __init__(self, iface, debug=False):
         self.debug = debug
@@ -721,8 +780,18 @@ class M1N1Proxy(Reloadable):
                 self.request(self.P_CALL, addr, *args, reboot=True)
     def get_bootargs(self):
         return self.request(self.P_GET_BOOTARGS)
+    def get_bootargs_rev(self):
+        ba_addr = self.request(self.P_GET_BOOTARGS)
+        # can be misaligned..
+        rev = self.read8(ba_addr) | (self.read8(ba_addr+1) << 8)
+        return (ba_addr, rev)
     def get_base(self):
         return self.request(self.P_GET_BASE)
+    def get_cpu_features(self):
+        addr = self.request(self.P_GET_CPU_FEATURES, CPUFeatures.sizeof())
+        if not addr:
+            raise ValueError("Size mismatch (Outdated CPUFeatures struct definition?)")
+        return self.iface.readstruct(addr, CPUFeatures)
     def set_baud(self, baudrate):
         self.iface.tty_enable = False
         def change():
@@ -765,6 +834,8 @@ class M1N1Proxy(Reloadable):
         if len(args) > 4:
             raise ValueError("Too many arguments")
         return self.request(self.P_EL3_CALL, addr, *args)
+    def get_chipid(self):
+        return self.request(self.P_GET_CHIPID)
 
     def write64(self, addr, data):
         '''write 8 byte value to given address'''
@@ -988,6 +1059,8 @@ class M1N1Proxy(Reloadable):
 
     def heapblock_alloc(self, size):
         return self.request(self.P_HEAPBLOCK_ALLOC, size)
+    def heapblock_set_limit(self, limit):
+        return self.request(self.P_HEAPBLOCK_SET_LIMIT, limit)
     def malloc(self, size):
         return self.request(self.P_MALLOC, size)
     def memalign(self, align, size):
@@ -1003,15 +1076,17 @@ class M1N1Proxy(Reloadable):
         self.request(self.P_KBOOT_SET_INITRD, base, size)
     def kboot_prepare_dt(self, dt_addr):
         return self.request(self.P_KBOOT_PREPARE_DT, dt_addr)
+    def kboot_set_uboot(self, name, value):
+        self.request(self.P_KBOOT_SET_UBOOT, name, value)
 
-    def pmgr_clock_enable(self, clkid):
-        return self.request(self.P_PMGR_CLOCK_ENABLE, clkid)
-    def pmgr_clock_disable(self, clkid):
-        return self.request(self.P_PMGR_CLOCK_DISABLE, clkid)
-    def pmgr_adt_clocks_enable(self, path):
-        return self.request(self.P_PMGR_ADT_CLOCKS_ENABLE, path)
-    def pmgr_adt_clocks_disable(self, path):
-        return self.request(self.P_PMGR_ADT_CLOCKS_DISABLE, path)
+    def pmgr_power_enable(self, clkid):
+        return self.request(self.P_PMGR_POWER_ENABLE, clkid)
+    def pmgr_power_disable(self, clkid):
+        return self.request(self.P_PMGR_POWER_DISABLE, clkid)
+    def pmgr_adt_power_enable(self, path):
+        return self.request(self.P_PMGR_ADT_POWER_ENABLE, path)
+    def pmgr_adt_power_disable(self, path):
+        return self.request(self.P_PMGR_ADT_POWER_DISABLE, path)
     def pmgr_reset(self, die, name):
         return self.request(self.P_PMGR_RESET, die, name)
 
@@ -1082,6 +1157,8 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_HV_EXIT_CPU, cpu)
     def hv_add_time(self, time):
         return self.request(self.P_HV_ADD_TIME, time)
+    def hv_sptm_set_mode(self, mode):
+        return self.request(self.P_HV_SPTM_SET_MODE, SPTM_MODE(mode))
 
     def fb_init(self):
         return self.request(self.P_FB_INIT)
@@ -1137,6 +1214,10 @@ class M1N1Proxy(Reloadable):
 
     def cpufreq_init(self):
         return self.request(self.P_CPUFREQ_INIT)
+    def read_gigalocker(self, buf):
+        return self.request(self.P_READ_GIGALOCKER, buf)
+    def free_gigalocker(self, buf):
+        return self.request(self.P_FREE_GIGALOCKER, buf)
 
 __all__.extend(k for k, v in globals().items()
                if (callable(v) or isinstance(v, type)) and v.__module__ == __name__)

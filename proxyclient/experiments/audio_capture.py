@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import sys, pathlib
 import time
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
@@ -18,11 +18,11 @@ from m1n1.hw.nco import NCO
 from m1n1.hw.admac import *
 from m1n1.hw.mca import *
 
-p.pmgr_adt_clocks_enable("/arm-io/i2c2")
-p.pmgr_adt_clocks_enable("/arm-io/admac-sio")
-p.pmgr_adt_clocks_enable("/arm-io/dart-sio")
-p.pmgr_adt_clocks_enable("/arm-io/mca-switch")
-p.pmgr_adt_clocks_enable("/arm-io/mca3")
+p.pmgr_adt_power_enable("/arm-io/i2c2")
+p.pmgr_adt_power_enable("/arm-io/admac-sio")
+p.pmgr_adt_power_enable("/arm-io/dart-sio")
+p.pmgr_adt_power_enable("/arm-io/mca-switch")
+p.pmgr_adt_power_enable("/arm-io/mca3")
 
 # reset AUDIO_P
 PS_AUDIO_P = PMGR(u).regs[0].PS4[10]

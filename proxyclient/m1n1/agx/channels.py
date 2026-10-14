@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 from construct import *
 from ..fw.agx.channels import *
@@ -21,7 +21,6 @@ class GPUChannel:
         self.state.WRITE_PTR.val = 0
 
     @classmethod
-    @property
     def item_size(cls):
         return cls.MSG_CLASS.sizeof()
 
@@ -34,7 +33,7 @@ class GPUTXChannel(GPUChannel):
 
     def send_message(self, msg):
         wptr = self.state.WRITE_PTR.val
-        self.iface.writemem(self.ring_addr + self.item_size * wptr,
+        self.iface.writemem(self.ring_addr + self.item_size() * wptr,
                             msg.build())
         self.state.WRITE_PTR.val = (wptr + 1) % self.ring_size
         self.doorbell()
@@ -48,8 +47,8 @@ class GPURXChannel(GPUChannel):
             raise Exception(f"wptr = {wptr:#x} > {self.ring_size:#x}")
 
         while rptr != wptr:
-            msg = self.iface.readmem(self.ring_addr + self.item_size * rptr,
-                                     self.item_size)
+            msg = self.iface.readmem(self.ring_addr + self.item_size() * rptr,
+                                     self.item_size())
             self.handle_message(self.MSG_CLASS.parse(msg))
             rptr = (rptr + 1) % self.ring_size
         self.state.READ_PTR.val = rptr
@@ -68,6 +67,7 @@ class GPUCmdQueueChannel(GPUTXChannel):
         msg.head = queue.wptr
         msg.event_number = event
         msg.new_queue = 1 if queue.first_time else 0
+        msg.timestamp = 0
         queue.first_time = False
         #print(msg)
         self.send_message(msg)

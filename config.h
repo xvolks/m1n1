@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -22,6 +22,9 @@
 //#define TARGET T8103
 // Some devices like Apple TV HD use other uarts for debug console
 //#define TARGET_BOARD 0x34
+
+// define to '1' to switch the DFU USB-C port to debugusb
+#define USE_DEBUG_USB 0
 
 #ifdef RELEASE
 # define FB_SILENT_MODE

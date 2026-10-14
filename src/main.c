@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "../build/build_cfg.h"
 #include "../build/build_tag.h"
@@ -23,12 +23,15 @@
 #include "sep.h"
 #include "smp.h"
 #include "string.h"
+#include "tps6598x.h"
 #include "uart.h"
 #include "uartproxy.h"
 #include "usb.h"
 #include "utils.h"
 #include "wdt.h"
 #include "xnuboot.h"
+
+#define CSR_UNAUTHENTICATED_ROOT BIT(11)
 
 struct vector_args next_stage;
 
@@ -51,7 +54,6 @@ void get_device_info(void)
         printf("  Target: %s\n", target);
 
     is_mac = !!strstr(model, "Mac");
-    has_dcp = adt_path_offset(adt, "/arm-io/dcp") > 0;
 
     int chosen = adt_path_offset(adt, "/chosen");
     if (chosen > 0) {
@@ -69,20 +71,12 @@ void get_device_info(void)
     printf("\n");
 }
 
-void run_actions(void)
+void run_actions(__maybe_unused u64 lp_sip0)
 {
     bool usb_up = false;
 
 #ifndef BRINGUP
 #ifdef EARLY_PROXY_TIMEOUT
-    int node = adt_path_offset(adt, "/chosen/asmb");
-    u64 lp_sip0 = 0;
-
-    if (node >= 0) {
-        ADT_GETPROP(adt, node, "lp-sip0", &lp_sip0);
-        printf("Boot policy: sip0 = %ld\n", lp_sip0);
-    }
-
     if (!cur_boot_args.video.display && lp_sip0 == 127) {
         printf("Bringing up USB for early debug...\n");
 
@@ -141,9 +135,11 @@ void run_actions(void)
 
 void m1n1_main(void)
 {
+    u64 lp_sip0 = 0;
+
     printf("\n\nm1n1 %s\n", m1n1_version);
     printf("Copyright The Asahi Linux Contributors\n");
-    printf("Licensed under the MIT license\n\n");
+    printf("Licensed under the GNU General Public License v2 or later\n\n");
 
     printf("Running in EL%lu\n\n", mrs(CurrentEL) >> 2);
 
@@ -152,11 +148,22 @@ void m1n1_main(void)
     heapblock_init();
 
 #ifndef BRINGUP
+    int node = adt_path_offset(adt, "/chosen/asmb");
+    if (node >= 0) {
+        ADT_GETPROP(adt, node, "lp-sip0", &lp_sip0);
+        printf("Boot policy: sip0 = %ld\n", lp_sip0);
+    }
+
+    // csrutil authenticated-root disable
+    if ((lp_sip0 & CSR_UNAUTHENTICATED_ROOT) || USE_DEBUG_USB)
+        usb_enable_debugusb();
+
     if (supports_gxf())
         gxf_init();
     mcc_init();
     mmu_init();
     aic_init();
+    smp_init();
 #endif
     wdt_disable();
 #ifndef BRINGUP
@@ -165,8 +172,7 @@ void m1n1_main(void)
     display_init();
     // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose the
     // framebuffer.
-    if (has_dcp)
-        display_shutdown(DCP_SLEEP_IF_EXTERNAL);
+    display_shutdown(DCP_SLEEP_IF_EXTERNAL);
     // On idevice we need to always clear, because otherwise it looks scuffed on white devices
     fb_init(!is_mac);
     fb_display_logo();
@@ -183,7 +189,7 @@ void m1n1_main(void)
 
     printf("Initialization complete.\n");
 
-    run_actions();
+    run_actions(lp_sip0);
 
     if (!next_stage.entry) {
         panic("Nothing to do!\n");

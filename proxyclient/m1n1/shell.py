@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import atexit, serial, os, struct, code, traceback, readline, rlcompleter, sys
 import __main__
 import builtins
@@ -27,6 +27,11 @@ class HistoryConsole(code.InteractiveConsole):
                 readline.read_history_file(histfile)
             except FileNotFoundError:
                 pass
+            except PermissionError as e:
+                print(f"Failed reading history from {histfile}: {e}", file=sys.stderr)
+                if sys.platform == "darwin":
+                    print(f"  On macOS this may be caused by extended attributes. "
+                          f"Try: xattr -c {histfile}", file=sys.stderr)
 
     def save_history(self):
         readline.set_history_length(10000)
@@ -176,7 +181,10 @@ def run_shell(locals, msg=None, exitmsg=None, poll_func=None):
                     desc = obj_name + str(signature(obj))
                 except:
                     continue
-                qn = obj.__qualname__
+                try:
+                    qn = obj.__qualname__
+                except:
+                    continue
                 if qn.find('.') > 0:
                     a = qn.split('.')
                     if a[0] not in subcmd_list:

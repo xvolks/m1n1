@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 import serial, os, struct, sys, time, json, os.path, gzip, functools
 from contextlib import contextmanager
 from construct import *
@@ -36,17 +36,29 @@ VERSION_MAP = {
     "iBoot-8422.100.650": "V13_3",
     "iBoot-8422.140.50.0.2": "V13_5B4",
     "iBoot-8422.141.2": "V13_5",
+    "iBoot-10151.140.19.700.2": "V14_7"
 }
 
 class ProxyUtils(Reloadable):
     CODE_BUFFER_SIZE = 0x10000
-    def __init__(self, p, heap_size=1024 * 1024 * 1024):
+    def __init__(self, p, heap_size=1024 * 1024 * 1024, m1n1_heap=128 * 1024 * 1024):
         self.iface = p.iface
         self.proxy = p
         self.base = p.get_base()
-        self.ba_addr = p.get_bootargs()
 
-        self.ba = self.iface.readstruct(self.ba_addr, BootArgs)
+        try:
+            self.cpu_features = p.get_cpu_features()
+        except ProxyRemoteError:
+            pass
+
+        (self.ba_addr, self.ba_rev) = p.get_bootargs_rev()
+
+        if self.ba_rev <= 1:
+            self.ba = self.iface.readstruct(self.ba_addr, BootArgs_r1)
+        elif  self.ba_rev == 2:
+            self.ba = self.iface.readstruct(self.ba_addr, BootArgs_r2)
+        elif  self.ba_rev == 3:
+            self.ba = self.iface.readstruct(self.ba_addr, BootArgs_r3)
 
         # We allocate a 128MB heap, 128MB after the m1n1 heap, without telling it about it.
         # This frees up from having to coordinate memory management or free stuff after a Python
@@ -65,7 +77,11 @@ class ProxyUtils(Reloadable):
         if os.environ.get("M1N1HEAP", ""):
             self.heap_base = int(os.environ.get("M1N1HEAP", ""), 16)
 
-        self.heap_base += 128 * 1024 * 1024 # We leave 128MB for m1n1 heap
+        self.heap_base += m1n1_heap
+        try:
+            p.heapblock_set_limit(self.heap_base)
+        except ProxyRemoteError:
+            pass
         self.heap_top = self.heap_base + self.heap_size
         self.heap = Heap(self.heap_base, self.heap_top)
         self.proxy.heap = self.heap
@@ -82,6 +98,8 @@ class ProxyUtils(Reloadable):
         self.simd_buf = self.malloc(32 * 16)
         self.simd_type = None
         self.simd = None
+
+        self.glk_arg_buf = self.malloc(16)
 
         self.mmu_off = False
 
@@ -159,19 +177,13 @@ class ProxyUtils(Reloadable):
 
     def mrs(self, reg, *, silent=False, call=None):
         '''read system register reg'''
-        op0, op1, CRn, CRm, op2 = sysreg_parse(reg)
-
-        op =  ((op0 << 19) | (op1 << 16) | (CRn << 12) |
-               (CRm << 8) | (op2 << 5) | 0xd5200000)
+        op = sysreg_encode(reg, read=True)
 
         return self.exec(op, call=call, silent=silent)
 
     def msr(self, reg, val, *, silent=False, call=None):
         '''Write val to system register reg'''
-        op0, op1, CRn, CRm, op2 = sysreg_parse(reg)
-
-        op =  ((op0 << 19) | (op1 << 16) | (CRn << 12) |
-               (CRm << 8) | (op2 << 5) | 0xd5000000)
+        op = sysreg_encode(reg, read=False)
 
         self.exec(op, val, call=call, silent=silent)
 
@@ -262,7 +274,7 @@ class ProxyUtils(Reloadable):
         self.iface.writemem(adt_base, self.adt_data)
 
     def disassemble_at(self, start, size, pc=None, vstart=None, sym=None):
-        '''disassemble len bytes of memory from start
+        '''disassemble size bytes of memory from start
          optional pc address will mark that line with a '*' '''
         code = struct.unpack(f"<{size // 4}I", self.iface.readmem(start, size))
         if vstart is None:
@@ -295,7 +307,8 @@ class ProxyUtils(Reloadable):
         print(f"  L2C_ERR_ADR: {self.mrs(L2C_ERR_ADR_EL1):#x}");
         print(f"  L2C_ERR_INF: {self.mrs(L2C_ERR_INF_EL1):#x}");
 
-        self.msr(L2C_ERR_STS_EL1, l2c_err_sts) # Clear the flag bits
+        if self.cpu_features.apple_sysregs_unlocked:
+            self.msr(L2C_ERR_STS_EL1, l2c_err_sts) # Clear the flag bits
         self.msr(DAIF, self.mrs(DAIF) | 0x100) # Re-enable SError exceptions
 
     def print_context(self, ctx, is_fault=True, addr=lambda a: f"0x{a:x}", sym=None, num_ctx=9):
@@ -411,6 +424,14 @@ class ProxyUtils(Reloadable):
     @property
     def sfr_version(self):
         return self.get_version(self.adt["/chosen"].system_firmware_version)
+
+    def get_gigalocker(self):
+        self.proxy.nvme_init()
+        self.proxy.read_gigalocker(self.glk_arg_buf)
+        ptr, size = struct.unpack('QQ', self.iface.readmem(self.glk_arg_buf, 16))
+        data = self.iface.readmem(ptr, size)
+        self.proxy.free_gigalocker(self.glk_arg_buf)
+        return data
 
 class LazyADT:
     def __init__(self, utils):
@@ -549,6 +570,14 @@ def bootstrap_port(iface, proxy):
         do_baud = False
 
     if do_baud:
+        try:
+            chip_id = proxy.get_chipid()
+            # These chips are too slow for baudrate 1500000 at their default frequency
+            if chip_id in (0x8960, 0x7000, 0x7001, 0x8000, 0x8001, 0x8003, 0x8010, 0x8011, 0x8015):
+                proxy.cpufreq_init()
+        # Old m1n1 version, assume they are not one of those chips
+        except ProxyCommandError: {}
+
         try:
             iface.nop()
             proxy.set_baud(1500000)
